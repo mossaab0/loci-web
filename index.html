@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loci — Game Studio</title>
+<!--
+  Loci quiz-game authoring page: sign in with the email account created in the app
+  (Profile → Create account), assign content to questions placed in AR, manage a
+  reusable question bank, and run the game lifecycle from a laptop.
+
+  ONE static file + config.js (Supabase URL + anon key). All authorization is
+  Row-Level Security — this page holds no secrets. Serve from anywhere static
+  (GitHub Pages); see backend/README.md for the deploy step.
+-->
+<style>
+  :root {
+    --primary: #d4537e; --warm: #faedda; --neutral: #eae4d9; --confirm: #6fa86b;
+    --paper: #fdf8f1; --ink: #332624; --ink-soft: #78655c; --danger: #bd4d47;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: #efe6d8; color: var(--ink); }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 22px; background: var(--paper);
+           box-shadow: 0 2px 8px rgba(60,35,25,.12); position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 20px; margin: 0; }
+  header .who { margin-left: auto; color: var(--ink-soft); font-size: 13px; }
+  main { max-width: 1060px; margin: 24px auto; padding: 0 18px; }
+  .card { background: var(--paper); border-radius: 14px; box-shadow: 0 3px 10px rgba(60,35,25,.10);
+          padding: 20px; margin-bottom: 18px; }
+  button { border: 0; border-radius: 10px; padding: 8px 16px; font-size: 14px; font-weight: 600;
+           cursor: pointer; background: var(--neutral); color: var(--ink); }
+  button.primary { background: var(--primary); color: #fff; }
+  button.confirm { background: var(--confirm); color: #fff; }
+  button.danger  { background: var(--danger); color: #fff; }
+  button.link { background: none; padding: 4px 6px; color: var(--primary); }
+  button:disabled { opacity: .45; cursor: default; }
+  input, textarea, select { border: 1px solid #d9cfc2; border-radius: 8px; padding: 8px 10px;
+           font-size: 14px; background: #fff; color: var(--ink); font-family: inherit; }
+  input:focus, textarea:focus, select:focus { outline: 2px solid var(--primary); border-color: transparent; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; color: var(--ink-soft); font-weight: 600; font-size: 12.5px;
+       text-transform: uppercase; letter-spacing: .04em; padding: 8px 10px; border-bottom: 2px solid var(--neutral); }
+  td { padding: 10px; border-bottom: 1px solid var(--neutral); vertical-align: top; }
+  tr.rowlink:hover { background: #fbf3e7; cursor: pointer; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 18px; }
+  .tabs button { padding: 9px 22px; }
+  .tabs button.active { background: var(--primary); color: #fff; }
+  .pill { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600; }
+  .pill.draft   { background: var(--neutral); color: var(--ink-soft); }
+  .pill.started { background: #dcedd8; color: #3c6b38; }
+  .pill.ended   { background: #e8d7d5; color: #8c4640; }
+  .pill.warn    { background: #f6e3c2; color: #8a6414; }
+  .muted { color: var(--ink-soft); font-size: 13px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; min-width: 160px; }
+  #status { min-height: 20px; font-size: 13.5px; color: var(--primary); margin: 4px 0 10px; }
+  .modal-back { position: fixed; inset: 0; background: rgba(40,25,20,.45); display: flex;
+                align-items: center; justify-content: center; z-index: 20; }
+  .modal { background: var(--paper); border-radius: 14px; padding: 22px; width: min(620px, 92vw);
+           max-height: 90vh; overflow: auto; box-shadow: 0 8px 30px rgba(40,25,20,.35); }
+  .modal h3 { margin-top: 0; }
+  .choice-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .choice-row input[type=text] { flex: 1; }
+  .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+                   gap: 10px; margin-top: 8px; }
+  .settings-grid label { font-size: 12.5px; color: var(--ink-soft); display: flex; flex-direction: column; gap: 4px; }
+  .hidden { display: none !important; }
+  code.jc { background: var(--warm); padding: 2px 8px; border-radius: 6px; font-size: 15px; letter-spacing: .08em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Loci — Game Studio</h1>
+  <span class="who" id="who"></span>
+  <button id="signout" class="hidden">Sign out</button>
+</header>
+<main>
+  <div id="status"></div>
+
+  <!-- ── Sign-in ─────────────────────────────────────────────────────────── -->
+  <div id="view-signin" class="card hidden" style="max-width:420px;margin:60px auto;">
+    <h2>Sign in</h2>
+    <p class="muted">Use the email account you created in the Loci app (Profile → Create account).</p>
+    <div class="row" style="flex-direction:column;align-items:stretch;">
+      <input id="si-email" type="email" placeholder="email" autocomplete="username">
+      <input id="si-pass" type="password" placeholder="password" autocomplete="current-password">
+      <button id="si-go" class="primary">Sign in</button>
+    </div>
+  </div>
+
+  <!-- ── Main (tabs) ─────────────────────────────────────────────────────── -->
+  <div id="view-main" class="hidden">
+    <div class="tabs">
+      <button id="tab-games" class="active">Games</button>
+      <button id="tab-bank">Question bank</button>
+    </div>
+
+    <!-- Games list -->
+    <div id="view-games">
+      <div class="card">
+        <div class="row">
+          <input id="ng-name" class="grow" placeholder="new game name" dir="auto">
+          <button id="ng-go" class="primary">New game</button>
+        </div>
+      </div>
+      <div class="card">
+        <table id="games-table">
+          <thead><tr><th>Name</th><th>Status</th><th>Join code</th><th>Questions</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p id="games-empty" class="muted hidden">No games yet — create one above, or in the app.</p>
+      </div>
+    </div>
+
+    <!-- Game detail -->
+    <div id="view-game" class="hidden">
+      <div class="card">
+        <div class="row">
+          <button id="g-back">&larr; Games</button>
+          <h2 id="g-name" style="margin:0;" dir="auto"></h2>
+          <span id="g-status" class="pill draft"></span>
+          <span id="g-code" class="muted"></span>
+          <span style="margin-left:auto;"></span>
+          <button id="g-start" class="confirm hidden">Start game</button>
+          <button id="g-end" class="danger hidden">End game</button>
+          <button id="g-delete" class="danger">Delete</button>
+        </div>
+        <div id="g-settings" class="settings-grid">
+          <label>Time limit (s, 0 = none)<input id="s-time" type="number" min="0"></label>
+          <label>Base points<input id="s-base" type="number" min="1"></label>
+          <label>Floor %<input id="s-floor" type="number" min="0" max="100"></label>
+          <label>Clock<select id="s-clock"><option value="player">per player</option><option value="global">global</option></select></label>
+          <label>Answer radius (m, 0 = off)<input id="s-radius" type="number" min="0"></label>
+          <label style="justify-content:end;"><button id="s-save">Save settings</button></label>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row" style="margin-bottom:10px;">
+          <h3 style="margin:0;">Questions</h3>
+          <span class="muted">place markers in the app; write content here</span>
+          <span style="margin-left:auto;"></span>
+          <button id="q-add" class="primary">Add question</button>
+        </div>
+        <table id="q-table">
+          <thead><tr><th>#</th><th>Question</th><th>Choices</th><th>Correct</th><th>Placement</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p id="q-empty" class="muted hidden">No questions yet.</p>
+      </div>
+    </div>
+
+    <!-- Bank -->
+    <div id="view-bank" class="hidden">
+      <div class="card">
+        <div class="row" style="margin-bottom:10px;">
+          <h3 style="margin:0;">Your question bank</h3>
+          <span class="muted">reusable questions — copy them into games from the question editor</span>
+          <span style="margin-left:auto;"></span>
+          <button id="b-add" class="primary">Add to bank</button>
+        </div>
+        <table id="b-table">
+          <thead><tr><th>Question</th><th>Choices</th><th>Correct</th><th>Tags</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p id="b-empty" class="muted hidden">Bank is empty.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Question / bank editor modal ───────────────────────────────────── -->
+  <div id="modal-back" class="modal-back hidden">
+    <div class="modal">
+      <h3 id="m-title">Edit question</h3>
+      <div id="m-bankrow" class="row" style="margin-bottom:10px;">
+        <select id="m-bank" class="grow"><option value="">copy from bank…</option></select>
+      </div>
+      <textarea id="m-q" rows="3" style="width:100%;" placeholder="the question" dir="auto"></textarea>
+      <div style="margin-top:10px;" id="m-choices">
+        <div class="choice-row"><input type="radio" name="m-correct" value="0"><input type="text" placeholder="choice 1" dir="auto"></div>
+        <div class="choice-row"><input type="radio" name="m-correct" value="1"><input type="text" placeholder="choice 2" dir="auto"></div>
+        <div class="choice-row"><input type="radio" name="m-correct" value="2"><input type="text" placeholder="choice 3" dir="auto"></div>
+        <div class="choice-row"><input type="radio" name="m-correct" value="3"><input type="text" placeholder="choice 4" dir="auto"></div>
+      </div>
+      <div id="m-tagsrow" class="row hidden" style="margin-top:10px;">
+        <input id="m-tags" class="grow" placeholder="tags, comma separated" dir="auto">
+      </div>
+      <p class="muted">The radio marks the correct choice.</p>
+      <div class="row" style="justify-content:flex-end;margin-top:14px;">
+        <button id="m-cancel">Cancel</button>
+        <button id="m-save" class="confirm">Save</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script>
+"use strict";
+const cfg = window.LOCI_CONFIG;
+const sb = supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+
+const $ = (id) => document.getElementById(id);
+const status = (msg, isError) => {
+  $("status").textContent = msg || "";
+  $("status").style.color = isError ? "var(--danger)" : "var(--primary)";
+};
+const esc = (s) => (s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const letters = ["A", "B", "C", "D"];
+
+let uid = null;
+let currentGame = null;       // game row currently open
+let bankCache = [];           // bank rows for the modal dropdown
+let modalTarget = null;       // {kind:'question'|'bank', row}
+
+// ── Auth ────────────────────────────────────────────────────────────────────
+
+async function init() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) enter(session); else showSignin();
+}
+
+function showSignin() {
+  $("view-signin").classList.remove("hidden");
+  $("view-main").classList.add("hidden");
+  $("signout").classList.add("hidden");
+  $("who").textContent = "";
+}
+
+function enter(session) {
+  uid = session.user.id;
+  $("view-signin").classList.add("hidden");
+  $("view-main").classList.remove("hidden");
+  $("signout").classList.remove("hidden");
+  $("who").textContent = session.user.email || "";
+  showGamesList();
+  loadGames();
+  loadBank();
+}
+
+$("si-go").onclick = async () => {
+  status("Signing in…");
+  const { data, error } = await sb.auth.signInWithPassword({
+    email: $("si-email").value.trim(), password: $("si-pass").value });
+  if (error) return status(error.message, true);
+  status("");
+  enter(data.session);
+};
+$("si-pass").addEventListener("keydown", (e) => { if (e.key === "Enter") $("si-go").click(); });
+
+$("signout").onclick = async () => { await sb.auth.signOut(); location.reload(); };
+
+// ── Tabs ────────────────────────────────────────────────────────────────────
+
+$("tab-games").onclick = () => { setTab("games"); showGamesList(); loadGames(); };
+$("tab-bank").onclick = () => { setTab("bank"); loadBank(); };
+function setTab(which) {
+  $("tab-games").classList.toggle("active", which === "games");
+  $("tab-bank").classList.toggle("active", which === "bank");
+  $("view-games").classList.toggle("hidden", which !== "games");
+  $("view-game").classList.add("hidden");
+  $("view-bank").classList.toggle("hidden", which !== "bank");
+}
+function showGamesList() {
+  $("view-games").classList.remove("hidden");
+  $("view-game").classList.add("hidden");
+  $("view-bank").classList.add("hidden");
+}
+
+// ── Games list ──────────────────────────────────────────────────────────────
+
+async function loadGames() {
+  // game_questions!game_id disambiguates: game_answers references both tables, so
+  // PostgREST otherwise sees a second (many-to-many) relationship and refuses to embed.
+  const { data, error } = await sb.from("games")
+    .select("*, game_questions!game_id(count)")
+    .eq("creator_id", uid)
+    .order("created_at", { ascending: false });
+  if (error) return status(error.message, true);
+  const tb = $("games-table").querySelector("tbody");
+  tb.innerHTML = "";
+  $("games-empty").classList.toggle("hidden", data.length > 0);
+  for (const g of data) {
+    const n = g.game_questions?.[0]?.count ?? 0;
+    const tr = document.createElement("tr");
+    tr.className = "rowlink";
+    tr.innerHTML = `<td dir="auto">${esc(g.name)}</td>
+      <td><span class="pill ${g.status}">${g.status}</span></td>
+      <td><code class="jc">${esc(g.join_code)}</code></td>
+      <td>${n}</td>
+      <td><button class="link">open &rarr;</button></td>`;
+    tr.onclick = () => openGame(g.id);
+    tb.appendChild(tr);
+  }
+}
+
+$("ng-go").onclick = async () => {
+  const name = $("ng-name").value.trim();
+  if (!name) return;
+  const { error } = await sb.from("games").insert({ creator_id: uid, name, status: "draft" });
+  if (error) return status(error.message, true);
+  $("ng-name").value = "";
+  status("Game created.");
+  loadGames();
+};
+
+// ── Game detail ─────────────────────────────────────────────────────────────
+
+async function openGame(id) {
+  const { data: g, error } = await sb.from("games").select("*").eq("id", id).single();
+  if (error) return status(error.message, true);
+  currentGame = g;
+  $("view-games").classList.add("hidden");
+  $("view-game").classList.remove("hidden");
+  $("g-name").textContent = g.name;
+  $("g-status").textContent = g.status;
+  $("g-status").className = "pill " + g.status;
+  $("g-code").innerHTML = `join code <code class="jc">${esc(g.join_code)}</code>`;
+  $("g-start").classList.toggle("hidden", g.status !== "draft");
+  $("g-end").classList.toggle("hidden", g.status !== "started");
+  const s = g.settings || {};
+  $("s-time").value = s.time_limit_s ?? 1800;
+  $("s-base").value = s.points_base ?? 1000;
+  $("s-floor").value = s.points_floor_pct ?? 50;
+  $("s-clock").value = s.clock_mode ?? "player";
+  $("s-radius").value = s.answer_radius_m ?? 5;
+  const draft = g.status === "draft";
+  for (const el of ["s-time", "s-base", "s-floor", "s-clock", "s-radius", "s-save", "q-add"])
+    $(el).disabled = !draft;
+  loadQuestions();
+}
+
+$("g-back").onclick = () => { showGamesList(); loadGames(); };
+
+async function loadQuestions() {
+  const { data, error } = await sb.from("game_questions")
+    .select("*").eq("game_id", currentGame.id).order("order_index");
+  if (error) return status(error.message, true);
+  const tb = $("q-table").querySelector("tbody");
+  tb.innerHTML = "";
+  $("q-empty").classList.toggle("hidden", data.length > 0);
+  const draft = currentGame.status === "draft";
+  for (const q of data) {
+    const placed = q.gps_lat != null || q.local_x != null;
+    const anchored = !!q.cloud_anchor_id;
+    const complete = q.question?.trim() && (q.choices || []).filter((c) => c?.trim()).length === 4;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>Q${q.order_index + 1}</td>
+      <td dir="auto">${esc(q.question) || '<span class="muted">(no text yet)</span>'}
+          ${complete ? "" : ' <span class="pill warn">needs text</span>'}</td>
+      <td dir="auto" class="muted">${(q.choices || []).map((c, i) => `${letters[i]}. ${esc(c)}`).join("<br>")}</td>
+      <td>${letters[q.correct_index] ?? "?"}</td>
+      <td>${anchored ? '<span class="pill started">anchored</span>'
+            : placed ? '<span class="pill draft">placed</span>'
+            : '<span class="pill warn">not placed</span>'}</td>
+      <td>${draft ? '<button class="link">edit</button>' : ""}
+          ${draft ? '<button class="link" style="color:var(--danger)">delete</button>' : ""}</td>`;
+    if (draft) {
+      const [editBtn, delBtn] = tr.querySelectorAll("button");
+      editBtn.onclick = () => openModal({ kind: "question", row: q });
+      delBtn.onclick = () => deleteQuestion(q);
+    }
+    tb.appendChild(tr);
+  }
+}
+
+$("q-add").onclick = async () => {
+  const { count } = await sb.from("game_questions")
+    .select("*", { count: "exact", head: true }).eq("game_id", currentGame.id);
+  const { error } = await sb.from("game_questions")
+    .insert({ game_id: currentGame.id, order_index: count ?? 0 });
+  if (error) return status(error.message, true);
+  loadQuestions();
+};
+
+async function deleteQuestion(q) {
+  if (!confirm(`Delete question ${q.order_index + 1}? The app marker will disappear on its next sync.`)) return;
+  let { error } = await sb.from("game_questions").delete().eq("id", q.id);
+  if (error) return status(error.message, true);
+  // Renumber the rest so Q numbers stay dense.
+  const { data } = await sb.from("game_questions")
+    .select("id, order_index").eq("game_id", currentGame.id).order("order_index");
+  for (let i = 0; i < (data || []).length; i++)
+    if (data[i].order_index !== i)
+      await sb.from("game_questions").update({ order_index: i }).eq("id", data[i].id);
+  loadQuestions();
+}
+
+$("s-save").onclick = async () => {
+  const settings = {
+    time_limit_s: +$("s-time").value || 0,
+    points_base: +$("s-base").value || 1000,
+    points_floor_pct: Math.min(100, Math.max(0, +$("s-floor").value || 0)),
+    clock_mode: $("s-clock").value,
+    answer_radius_m: +$("s-radius").value || 0,
+  };
+  const { error } = await sb.from("games").update({ settings }).eq("id", currentGame.id);
+  if (error) return status(error.message, true);
+  currentGame.settings = settings;
+  status("Settings saved.");
+};
+
+$("g-start").onclick = async () => {
+  // Placement happens in the app; the server only validates text/choices. Warn if
+  // markers are missing — an unplaced question can't be found in the hunt.
+  const { data: qs } = await sb.from("game_questions")
+    .select("gps_lat, local_x").eq("game_id", currentGame.id);
+  const unplaced = (qs || []).filter((q) => q.gps_lat == null && q.local_x == null).length;
+  const warn = unplaced > 0
+    ? `\n\nWARNING: ${unplaced} question(s) have no AR marker yet — place them in the app first, or players won't be able to find them.`
+    : "";
+  if (!confirm("Start the game? Questions lock and become visible to joined players." + warn)) return;
+  const { error } = await sb.rpc("start_game", { p_game: currentGame.id });
+  if (error) return status(error.message, true);
+  status("Game started — share the join code.");
+  openGame(currentGame.id);
+};
+
+$("g-end").onclick = async () => {
+  if (!confirm("End the game? Answering stops for everyone.")) return;
+  const { error } = await sb.rpc("end_game", { p_game: currentGame.id });
+  if (error) return status(error.message, true);
+  status("Game ended.");
+  openGame(currentGame.id);
+};
+
+$("g-delete").onclick = async () => {
+  if (!confirm(`Delete "${currentGame.name}" and all its questions, players and answers?`)) return;
+  const { error } = await sb.from("games").delete().eq("id", currentGame.id);
+  if (error) return status(error.message, true);
+  status("Game deleted.");
+  showGamesList();
+  loadGames();
+};
+
+// ── Bank ────────────────────────────────────────────────────────────────────
+
+async function loadBank() {
+  const { data, error } = await sb.from("question_bank")
+    .select("*").order("created_at", { ascending: false });
+  if (error) return status(error.message, true);
+  bankCache = data;
+  const tb = $("b-table").querySelector("tbody");
+  tb.innerHTML = "";
+  $("b-empty").classList.toggle("hidden", data.length > 0);
+  for (const b of data) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td dir="auto">${esc(b.question)}</td>
+      <td dir="auto" class="muted">${(b.choices || []).map((c, i) => `${letters[i]}. ${esc(c)}`).join("<br>")}</td>
+      <td>${letters[b.correct_index] ?? "?"}</td>
+      <td dir="auto" class="muted">${(b.tags || []).map(esc).join(", ")}</td>
+      <td><button class="link">edit</button>
+          <button class="link" style="color:var(--danger)">delete</button></td>`;
+    const [editBtn, delBtn] = tr.querySelectorAll("button");
+    editBtn.onclick = () => openModal({ kind: "bank", row: b });
+    delBtn.onclick = async () => {
+      if (!confirm("Delete this bank question?")) return;
+      const { error: e } = await sb.from("question_bank").delete().eq("id", b.id);
+      if (e) return status(e.message, true);
+      loadBank();
+    };
+    tb.appendChild(tr);
+  }
+}
+
+$("b-add").onclick = () => openModal({
+  kind: "bank",
+  row: { question: "", choices: ["", "", "", ""], correct_index: 0, tags: [] },
+});
+
+// ── Editor modal (game questions + bank entries share it) ──────────────────
+
+function openModal(target) {
+  modalTarget = target;
+  const r = target.row;
+  $("m-title").textContent = target.kind === "bank"
+    ? (r.id ? "Edit bank question" : "Add to bank")
+    : `Question ${r.order_index + 1}`;
+  $("m-q").value = r.question || "";
+  const inputs = $("m-choices").querySelectorAll('input[type=text]');
+  const radios = $("m-choices").querySelectorAll('input[type=radio]');
+  for (let i = 0; i < 4; i++) {
+    inputs[i].value = r.choices?.[i] || "";
+    radios[i].checked = (r.correct_index ?? 0) === i;
+  }
+  $("m-tagsrow").classList.toggle("hidden", target.kind !== "bank");
+  $("m-tags").value = (r.tags || []).join(", ");
+  // "copy from bank" only makes sense for game questions.
+  $("m-bankrow").classList.toggle("hidden", target.kind !== "question");
+  if (target.kind === "question") {
+    const sel = $("m-bank");
+    sel.innerHTML = '<option value="">copy from bank…</option>';
+    bankCache.forEach((b, i) => {
+      const o = document.createElement("option");
+      o.value = String(i);
+      o.textContent = b.question.length > 70 ? b.question.slice(0, 70) + "…" : b.question;
+      sel.appendChild(o);
+    });
+  }
+  $("modal-back").classList.remove("hidden");
+}
+
+$("m-bank").onchange = () => {
+  const b = bankCache[+$("m-bank").value];
+  if (!b) return;
+  $("m-q").value = b.question;
+  const inputs = $("m-choices").querySelectorAll('input[type=text]');
+  const radios = $("m-choices").querySelectorAll('input[type=radio]');
+  for (let i = 0; i < 4; i++) {
+    inputs[i].value = b.choices?.[i] || "";
+    radios[i].checked = b.correct_index === i;
+  }
+};
+
+$("m-cancel").onclick = () => $("modal-back").classList.add("hidden");
+
+$("m-save").onclick = async () => {
+  const question = $("m-q").value.trim();
+  const choices = [...$("m-choices").querySelectorAll('input[type=text]')].map((i) => i.value.trim());
+  const correct = +([...$("m-choices").querySelectorAll('input[type=radio]')].find((r) => r.checked)?.value ?? 0);
+  let error;
+  if (modalTarget.kind === "question") {
+    ({ error } = await sb.from("game_questions")
+      .update({ question, choices, correct_index: correct })
+      .eq("id", modalTarget.row.id));
+  } else {
+    const tags = $("m-tags").value.split(",").map((t) => t.trim()).filter(Boolean);
+    if (!question) return status("Bank questions need text.", true);
+    if (modalTarget.row.id) {
+      ({ error } = await sb.from("question_bank")
+        .update({ question, choices, correct_index: correct, tags, updated_at: new Date().toISOString() })
+        .eq("id", modalTarget.row.id));
+    } else {
+      ({ error } = await sb.from("question_bank")
+        .insert({ owner_id: uid, question, choices, correct_index: correct, tags }));
+    }
+  }
+  if (error) return status(error.message, true);
+  $("modal-back").classList.add("hidden");
+  status("Saved.");
+  if (modalTarget.kind === "question") loadQuestions(); else loadBank();
+};
+
+init();
+</script>
+</body>
+</html>
