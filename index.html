@@ -34,6 +34,9 @@
   button.danger  { background: var(--danger); color: #fff; }
   button.link { background: none; padding: 4px 6px; color: var(--primary); }
   button:disabled { opacity: .45; cursor: default; }
+  .qpin { background: #f5c747; color: #3b2a1a; border: 2px solid #3b2a1a; border-radius: 50%;
+          display: flex; align-items: center; justify-content: center;
+          font-weight: 700; font-size: 12px; box-shadow: 0 2px 6px rgba(60,35,25,.35); }
   input, textarea, select { border: 1px solid #d9cfc2; border-radius: 8px; padding: 8px 10px;
            font-size: 14px; background: #fff; color: var(--ink); font-family: inherit; }
   input:focus, textarea:focus, select:focus { outline: 2px solid var(--primary); border-color: transparent; }
@@ -150,6 +153,14 @@
         </table>
         <p id="q-empty" class="muted hidden">No questions yet.</p>
       </div>
+      <div class="card">
+        <div class="row" style="margin-bottom:10px;">
+          <h3 style="margin:0;">Map</h3>
+          <span class="muted">where the placed questions are</span>
+        </div>
+        <div id="q-map" style="height:360px;border-radius:10px;" class="hidden"></div>
+        <p id="map-empty" class="muted">Markers appear here once questions are placed in the app.</p>
+      </div>
     </div>
 
     <!-- Bank -->
@@ -209,6 +220,8 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 <script src="config.js"></script>
 <script>
@@ -401,6 +414,7 @@ async function loadQuestions() {
   } else {
     $("g-ready").classList.add("hidden");
   }
+  updateMap(data);
 }
 
 $("q-add").onclick = async () => {
@@ -611,6 +625,46 @@ $("m-save").onclick = async () => {
   status("Saved.");
   if (modalTarget.kind === "question") loadQuestions(); else loadBank();
 };
+
+// Map: placed questions as numbered gold pins (Leaflet + OSM tiles). Placement
+// with no GPS fix stores 0,0 - those rows count as placed for Start but have no
+// usable geotag, so they stay off the map.
+
+let qMap = null, qMapPins = null;
+
+function updateMap(questions) {
+  const placed = (questions || []).filter(
+    (q) => q.gps_lat != null && q.gps_lon != null && (q.gps_lat !== 0 || q.gps_lon !== 0));
+  $("q-map").classList.toggle("hidden", placed.length === 0);
+  $("map-empty").classList.toggle("hidden", placed.length > 0);
+  if (placed.length === 0) return;
+
+  if (!qMap) {
+    qMap = L.map("q-map", { scrollWheelZoom: false });
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(qMap);
+    qMapPins = L.layerGroup().addTo(qMap);
+  }
+  qMapPins.clearLayers();
+  const pts = [];
+  for (const q of placed) {
+    const pt = [q.gps_lat, q.gps_lon];
+    pts.push(pt);
+    L.marker(pt, {
+      icon: L.divIcon({ className: "qpin", html: `Q${q.order_index + 1}`, iconSize: [30, 30], iconAnchor: [15, 15] }),
+    }).addTo(qMapPins)
+      .bindPopup(`<b>Q${q.order_index + 1}</b> ${q.cloud_anchor_id ? "· anchored" : "· gps"}<br>` +
+                 `<span dir="auto">${esc(q.question) || "(no text yet)"}</span>`);
+  }
+  // The container may have just been unhidden - Leaflet needs a size refresh
+  // before fitBounds computes anything sensible.
+  setTimeout(() => {
+    qMap.invalidateSize();
+    qMap.fitBounds(L.latLngBounds(pts).pad(0.3), { maxZoom: 18 });
+  }, 60);
+}
 
 // QR codes: Invite is the same static loci-join payload the app shows. Offline
 // pack is the animated LQ1 frame sequence, byte-compatible with the app's
