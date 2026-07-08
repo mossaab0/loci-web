@@ -13,6 +13,7 @@
   Row-Level Security — this page holds no secrets. Serve from anywhere static
   (GitHub Pages); see backend/README.md for the deploy step.
 -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css">
 <style>
   :root {
     --primary: #d4537e; --warm: #faedda; --neutral: #eae4d9; --confirm: #6fa86b;
@@ -35,8 +36,9 @@
   button.link { background: none; padding: 4px 6px; color: var(--primary); }
   button:disabled { opacity: .45; cursor: default; }
   .qpin { background: #f5c747; color: #3b2a1a; border: 2px solid #3b2a1a; border-radius: 15px;
-          display: flex; align-items: center; justify-content: center;
-          font-weight: 700; font-size: 12px; box-shadow: 0 2px 6px rgba(60,35,25,.35); }
+          box-sizing: border-box; display: flex; align-items: center; justify-content: center;
+          line-height: 1; padding: 0; font-weight: 700; font-size: 12px;
+          box-shadow: 0 2px 6px rgba(60,35,25,.35); }
   input, textarea, select { border: 1px solid #d9cfc2; border-radius: 8px; padding: 8px 10px;
            font-size: 14px; background: #fff; color: var(--ink); font-family: inherit; }
   input:focus, textarea:focus, select:focus { outline: 2px solid var(--primary); border-color: transparent; }
@@ -221,7 +223,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css">
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 <script src="config.js"></script>
@@ -384,7 +385,7 @@ async function loadQuestions() {
     if (!complete) needText++;
     if (!placed) needMark++;
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>Q${q.order_index + 1}</td>
+    tr.innerHTML = `<td>${q.order_index + 1}</td>
       <td dir="auto">${esc(q.question) || '<span class="muted">(no text yet)</span>'}
           ${complete ? "" : ' <span class="pill warn">needs text</span>'}</td>
       <td dir="auto" class="muted">${(q.choices || []).map((c, i) => `${letters[i]}. ${esc(c)}`).join("<br>")}</td>
@@ -641,7 +642,7 @@ function updateMap(questions) {
   if (placed.length === 0) return;
 
   if (!qMap) {
-    qMap = L.map("q-map", { scrollWheelZoom: false });
+    qMap = L.map("q-map", { scrollWheelZoom: true });
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
@@ -663,13 +664,13 @@ function updateMap(questions) {
   for (const group of groups.values()) {
     const pt = [group[0].gps_lat, group[0].gps_lon];
     pts.push(pt);
-    const label = group.map((q) => `Q${q.order_index + 1}`).join(",");
+    const label = group.map((q) => q.order_index + 1).join(",");
     const w = Math.max(30, 10 + label.length * 8);
     const pop = document.createElement("div");
     group.forEach((q, i) => {
       if (i > 0) pop.appendChild(document.createElement("hr"));
       const sec = document.createElement("div");
-      sec.innerHTML = `<b>Q${q.order_index + 1}</b> ${q.cloud_anchor_id ? "· anchored" : "· gps"} ` +
+      sec.innerHTML = `<b>${q.order_index + 1}.</b> ${q.cloud_anchor_id ? "· anchored" : "· gps"} ` +
                       `<span dir="auto">${esc(q.question) || "(no text yet)"}</span> `;
       if (draft) {
         const btn = document.createElement("button");
