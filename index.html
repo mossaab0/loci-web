@@ -34,7 +34,7 @@
   button.danger  { background: var(--danger); color: #fff; }
   button.link { background: none; padding: 4px 6px; color: var(--primary); }
   button:disabled { opacity: .45; cursor: default; }
-  .qpin { background: #f5c747; color: #3b2a1a; border: 2px solid #3b2a1a; border-radius: 50%;
+  .qpin { background: #f5c747; color: #3b2a1a; border: 2px solid #3b2a1a; border-radius: 15px;
           display: flex; align-items: center; justify-content: center;
           font-weight: 700; font-size: 12px; box-shadow: 0 2px 6px rgba(60,35,25,.35); }
   input, textarea, select { border: 1px solid #d9cfc2; border-radius: 8px; padding: 8px 10px;
@@ -648,15 +648,40 @@ function updateMap(questions) {
     qMapPins = L.layerGroup().addTo(qMap);
   }
   qMapPins.clearLayers();
-  const pts = [];
+  // Placements made seconds apart share the same GPS fix and would stack pins
+  // exactly on top of each other (only the topmost visible) - same-spot
+  // questions group into one pin whose popup lists, and edits, each of them.
+  const groups = new Map();
   for (const q of placed) {
-    const pt = [q.gps_lat, q.gps_lon];
+    const key = q.gps_lat.toFixed(5) + "," + q.gps_lon.toFixed(5);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(q);
+  }
+  const draft = currentGame.status === "draft";
+  const pts = [];
+  for (const group of groups.values()) {
+    const pt = [group[0].gps_lat, group[0].gps_lon];
     pts.push(pt);
+    const label = group.map((q) => `Q${q.order_index + 1}`).join(",");
+    const w = Math.max(30, 10 + label.length * 8);
+    const pop = document.createElement("div");
+    group.forEach((q, i) => {
+      if (i > 0) pop.appendChild(document.createElement("hr"));
+      const sec = document.createElement("div");
+      sec.innerHTML = `<b>Q${q.order_index + 1}</b> ${q.cloud_anchor_id ? "· anchored" : "· gps"} ` +
+                      `<span dir="auto">${esc(q.question) || "(no text yet)"}</span> `;
+      if (draft) {
+        const btn = document.createElement("button");
+        btn.className = "link";
+        btn.textContent = "edit";
+        btn.onclick = () => { qMap.closePopup(); openModal({ kind: "question", row: q }); };
+        sec.appendChild(btn);
+      }
+      pop.appendChild(sec);
+    });
     L.marker(pt, {
-      icon: L.divIcon({ className: "qpin", html: `Q${q.order_index + 1}`, iconSize: [30, 30], iconAnchor: [15, 15] }),
-    }).addTo(qMapPins)
-      .bindPopup(`<b>Q${q.order_index + 1}</b> ${q.cloud_anchor_id ? "· anchored" : "· gps"}<br>` +
-                 `<span dir="auto">${esc(q.question) || "(no text yet)"}</span>`);
+      icon: L.divIcon({ className: "qpin", html: label, iconSize: [w, 30], iconAnchor: [w / 2, 15] }),
+    }).addTo(qMapPins).bindPopup(pop);
   }
   // The container may have just been unhidden - Leaflet needs a size refresh
   // before fitBounds computes anything sensible.
