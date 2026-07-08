@@ -120,7 +120,9 @@
           <h2 id="g-name" style="margin:0;" dir="auto"></h2>
           <span id="g-status" class="pill draft"></span>
           <span id="g-code" class="muted"></span>
+          <span id="g-ready" class="pill warn hidden"></span>
           <span style="margin-left:auto;"></span>
+          <button id="g-qr" class="hidden">QR codes</button>
           <button id="g-start" class="confirm hidden">Start game</button>
           <button id="g-end" class="danger hidden">End game</button>
           <button id="g-delete" class="danger">Delete</button>
@@ -188,9 +190,26 @@
       </div>
     </div>
   </div>
+
+  <!-- QR modal: invite (static) + offline pack (animated sequence) -->
+  <div id="qr-back" class="modal-back hidden">
+    <div class="modal" style="text-align:center;">
+      <div class="row" style="justify-content:center;">
+        <button id="qr-join-tab">Invite</button>
+        <button id="qr-pack-tab">Offline pack</button>
+      </div>
+      <img id="qr-img" alt="QR" style="width:min(70vw,420px);margin-top:12px;image-rendering:pixelated;">
+      <p id="qr-caption" class="muted"></p>
+      <div class="row" style="justify-content:flex-end;">
+        <button id="qr-close">Close</button>
+      </div>
+    </div>
+  </div>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 <script src="config.js"></script>
 <script>
 "use strict";
@@ -316,7 +335,9 @@ async function openGame(id) {
   $("g-status").className = "pill " + g.status;
   $("g-code").innerHTML = `join code <code class="jc">${esc(fmtCode(g.join_code))}</code>`;
   $("g-start").classList.toggle("hidden", g.status !== "draft");
+  $("g-start").disabled = true;   // loadQuestions() decides readiness
   $("g-end").classList.toggle("hidden", g.status !== "started");
+  $("g-qr").classList.toggle("hidden", !g.join_code || g.status === "ended");
   const s = g.settings || {};
   $("s-time").value = s.time_limit_s ?? 1800;
   $("s-base").value = s.points_base ?? 1000;
@@ -340,11 +361,14 @@ async function loadQuestions() {
   tb.innerHTML = "";
   $("q-empty").classList.toggle("hidden", data.length > 0);
   const draft = currentGame.status === "draft";
+  let needText = 0, needMark = 0;
   for (const q of data) {
     const placed = q.gps_lat != null || q.local_x != null;
     const anchored = !!q.cloud_anchor_id;
     const complete = q.question?.trim() && (q.choices || []).length >= 2
       && (q.choices || []).every((c) => c?.trim());
+    if (!complete) needText++;
+    if (!placed) needMark++;
     const tr = document.createElement("tr");
     tr.innerHTML = `<td>Q${q.order_index + 1}</td>
       <td dir="auto">${esc(q.question) || '<span class="muted">(no text yet)</span>'}
@@ -363,15 +387,31 @@ async function loadQuestions() {
     }
     tb.appendChild(tr);
   }
+
+  // Start only when the game is actually playable: at least one question, all with
+  // text and an AR marker (placement happens in the app).
+  if (draft) {
+    const gaps = [];
+    if (data.length === 0) gaps.push("no questions yet");
+    if (needText > 0) gaps.push(`${needText} need${needText === 1 ? "s" : ""} text`);
+    if (needMark > 0) gaps.push(`${needMark} need${needMark === 1 ? "s" : ""} a marker`);
+    $("g-start").disabled = gaps.length > 0;
+    $("g-ready").textContent = gaps.join(" \u00b7 ");
+    $("g-ready").classList.toggle("hidden", gaps.length === 0);
+  } else {
+    $("g-ready").classList.add("hidden");
+  }
 }
 
 $("q-add").onclick = async () => {
   const { count } = await sb.from("game_questions")
     .select("*", { count: "exact", head: true }).eq("game_id", currentGame.id);
-  const { error } = await sb.from("game_questions")
-    .insert({ game_id: currentGame.id, order_index: count ?? 0 });
+  const { data: inserted, error } = await sb.from("game_questions")
+    .insert({ game_id: currentGame.id, order_index: count ?? 0 })
+    .select().single();
   if (error) return status(error.message, true);
   loadQuestions();
+  openModal({ kind: "question", row: inserted });   // straight into writing it
 };
 
 async function deleteQuestion(q) {
@@ -571,6 +611,119 @@ $("m-save").onclick = async () => {
   status("Saved.");
   if (modalTarget.kind === "question") loadQuestions(); else loadBank();
 };
+
+// QR codes: Invite is the same static loci-join payload the app shows. Offline
+// pack is the animated LQ1 frame sequence, byte-compatible with the app's
+// OfflinePack codec (JSON -> raw deflate -> base64; CRC-32 over the base64 text;
+// 500-char chunks; 2 fps round-robin - the scanner assembles in any order).
+
+let qrTimer = null;
+
+const crcTable = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32Hex(str) {   // base64 text is ASCII, so charCodeAt == byte
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < str.length; i++)
+    crc = crcTable[(crc ^ str.charCodeAt(i)) & 0xFF] ^ (crc >>> 8);
+  return ((crc ^ 0xFFFFFFFF) >>> 0).toString(16).padStart(8, "0");
+}
+
+function bytesToBase64(bytes) {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000)
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+function buildPackFrames(game, questions) {
+  const s = game.settings || {};
+  const pack = {
+    v: 1,
+    g: game.id,
+    n: game.name || "",
+    t: s.time_limit_s ?? 1800,
+    b: s.points_base ?? 1000,
+    f: s.points_floor_pct ?? 50,
+    m: s.clock_mode ?? "player",
+    r: s.answer_radius_m ?? 5,
+    rm: s.radius_mode ?? "visibility",
+    st: Math.floor(new Date(game.started_at).getTime() / 1000),
+    q: questions
+      .filter((q) => q.gps_lat != null || q.local_x != null)   // only placed ones ship
+      .map((q) => ({
+        o: q.order_index,
+        q: q.question || "",
+        c: q.choices || ["", "", "", ""],
+        k: q.correct_index ?? 0,
+        la: q.gps_lat ?? 0,
+        lo: q.gps_lon ?? 0,
+      })),
+  };
+  const blob = bytesToBase64(pako.deflateRaw(new TextEncoder().encode(JSON.stringify(pack)), { level: 9 }));
+  const crc = crc32Hex(blob);
+  const id8 = game.id.slice(0, 8).replace(/-/g, "");
+  const total = Math.ceil(blob.length / 500);
+  const frames = [];
+  for (let i = 0; i < total; i++)
+    frames.push(`LQ1|${id8}|${i}|${total}|${crc}|${blob.slice(i * 500, (i + 1) * 500)}`);
+  return frames;
+}
+
+function renderQr(payload) {
+  const qr = qrcode(0, "M");   // auto version, ECC M - the spec the app scans at
+  qr.addData(payload);
+  qr.make();
+  $("qr-img").src = qr.createDataURL(6, 8);
+}
+
+function stopQrCycle() {
+  if (qrTimer) { clearInterval(qrTimer); qrTimer = null; }
+}
+
+function showJoinQr() {
+  stopQrCycle();
+  renderQr("loci-join:" + currentGame.join_code);
+  $("qr-caption").textContent =
+    `join code ${fmtCode(currentGame.join_code)} - players scan this (Games \u2192 Scan QR)`;
+}
+
+async function showPackQr() {
+  stopQrCycle();
+  if (currentGame.status !== "started")
+    return status("Start the game first - the pack carries the started clock.", true);
+  $("qr-caption").textContent = "building the pack\u2026";
+  const { data: qs, error } = await sb.from("game_questions")
+    .select("*").eq("game_id", currentGame.id).order("order_index");
+  if (error) return status(error.message, true);
+  const frames = buildPackFrames(currentGame, qs || []);
+  if (frames.length === 0) return status("No placed questions to pack.", true);
+  let i = 0;
+  const tick = () => {
+    renderQr(frames[i]);
+    $("qr-caption").textContent =
+      `frame ${i + 1}/${frames.length} - the phone scans until all frames arrive (any order)`;
+    i = (i + 1) % frames.length;
+  };
+  tick();
+  if (frames.length > 1) qrTimer = setInterval(tick, 500);
+}
+
+$("g-qr").onclick = () => {
+  $("qr-pack-tab").disabled = currentGame.status !== "started";
+  $("qr-back").classList.remove("hidden");
+  showJoinQr();
+};
+$("qr-join-tab").onclick = showJoinQr;
+$("qr-pack-tab").onclick = showPackQr;
+$("qr-close").onclick = () => { stopQrCycle(); $("qr-back").classList.add("hidden"); };
 
 init();
 </script>
