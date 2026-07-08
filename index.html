@@ -632,14 +632,14 @@ $("m-save").onclick = async () => {
 // with no GPS fix stores 0,0 - those rows count as placed for Start but have no
 // usable geotag, so they stay off the map.
 
-let qMap = null, qMapPins = null;
+let qMap = null, qMapPins = null, qMapPlaced = [];
 
 function updateMap(questions) {
-  const placed = (questions || []).filter(
+  qMapPlaced = (questions || []).filter(
     (q) => q.gps_lat != null && q.gps_lon != null && (q.gps_lat !== 0 || q.gps_lon !== 0));
-  $("q-map").classList.toggle("hidden", placed.length === 0);
-  $("map-empty").classList.toggle("hidden", placed.length > 0);
-  if (placed.length === 0) return;
+  $("q-map").classList.toggle("hidden", qMapPlaced.length === 0);
+  $("map-empty").classList.toggle("hidden", qMapPlaced.length > 0);
+  if (qMapPlaced.length === 0) { if (qMapPins) qMapPins.clearLayers(); return; }
 
   if (!qMap) {
     qMap = L.map("q-map", { scrollWheelZoom: true });
@@ -648,29 +648,50 @@ function updateMap(questions) {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     }).addTo(qMap);
     qMapPins = L.layerGroup().addTo(qMap);
+    qMap.on("zoomend", renderPins);   // clusters depend on the zoom level
   }
+  renderPins();
+  // The container may have just been unhidden - Leaflet needs a size refresh
+  // before fitBounds computes anything sensible.
+  setTimeout(() => {
+    qMap.invalidateSize();
+    qMap.fitBounds(L.latLngBounds(qMapPlaced.map((q) => [q.gps_lat, q.gps_lon])).pad(0.3), { maxZoom: 18 });
+  }, 60);
+}
+
+// Zoom-aware clustering: questions whose pins would overlap AT THIS zoom merge
+// into one pill ("1,2") that lists each member in its popup; zooming in grows
+// the pixel distances and splits them back into individual pins.
+function renderPins() {
+  if (!qMap || !qMapPins) return;
   qMapPins.clearLayers();
-  // Placements made seconds apart share the same GPS fix and would stack pins
-  // exactly on top of each other (only the topmost visible) - same-spot
-  // questions group into one pin whose popup lists, and edits, each of them.
-  const groups = new Map();
-  for (const q of placed) {
-    const key = q.gps_lat.toFixed(5) + "," + q.gps_lon.toFixed(5);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(q);
+  if (qMapPlaced.length === 0) return;
+
+  const zoom = qMap.getZoom();
+  const pts = qMapPlaced.map((q) => ({ q, px: qMap.project([q.gps_lat, q.gps_lon], zoom) }));
+  const used = new Array(pts.length).fill(false);
+  const clusters = [];
+  for (let i = 0; i < pts.length; i++) {
+    if (used[i]) continue;
+    const members = [pts[i]];
+    used[i] = true;
+    for (let j = i + 1; j < pts.length; j++) {
+      if (!used[j] && pts[j].px.distanceTo(pts[i].px) < 38) { members.push(pts[j]); used[j] = true; }
+    }
+    clusters.push(members.map((m) => m.q));
   }
+
   const draft = currentGame.status === "draft";
-  const pts = [];
-  for (const group of groups.values()) {
-    const pt = [group[0].gps_lat, group[0].gps_lon];
-    pts.push(pt);
+  for (const group of clusters) {
+    const lat = group.reduce((a, q) => a + q.gps_lat, 0) / group.length;
+    const lon = group.reduce((a, q) => a + q.gps_lon, 0) / group.length;
     const label = group.map((q) => q.order_index + 1).join(",");
     const w = Math.max(30, 10 + label.length * 8);
     const pop = document.createElement("div");
     group.forEach((q, i) => {
       if (i > 0) pop.appendChild(document.createElement("hr"));
       const sec = document.createElement("div");
-      sec.innerHTML = `<b>${q.order_index + 1}.</b> ${q.cloud_anchor_id ? "· anchored" : "· gps"} ` +
+      sec.innerHTML = `<b>${q.order_index + 1}.</b> ${q.cloud_anchor_id ? "\u00b7 anchored" : "\u00b7 gps"} ` +
                       `<span dir="auto">${esc(q.question) || "(no text yet)"}</span> `;
       if (draft) {
         const btn = document.createElement("button");
@@ -681,16 +702,10 @@ function updateMap(questions) {
       }
       pop.appendChild(sec);
     });
-    L.marker(pt, {
+    L.marker([lat, lon], {
       icon: L.divIcon({ className: "qpin", html: label, iconSize: [w, 30], iconAnchor: [w / 2, 15] }),
     }).addTo(qMapPins).bindPopup(pop);
   }
-  // The container may have just been unhidden - Leaflet needs a size refresh
-  // before fitBounds computes anything sensible.
-  setTimeout(() => {
-    qMap.invalidateSize();
-    qMap.fitBounds(L.latLngBounds(pts).pad(0.3), { maxZoom: 18 });
-  }, 60);
 }
 
 // QR codes: Invite is the same static loci-join payload the app shows. Offline
