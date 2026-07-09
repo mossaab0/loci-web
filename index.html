@@ -217,8 +217,9 @@
         <img id="qr-img2" alt="QR" style="max-width:540px;image-rendering:pixelated;" hidden>
       </div>
       <p id="qr-caption" class="muted"></p>
-      <div class="row" style="justify-content:flex-end;">
-        <button id="qr-close">Close</button>
+      <div class="row" style="justify-content:space-between;">
+        <button id="qr-next" class="confirm" hidden>Next frames</button>
+        <button id="qr-close" style="margin-left:auto;">Close</button>
       </div>
     </div>
   </div>
@@ -803,6 +804,7 @@ function stopQrCycle() {
 
 function showJoinQr() {
   stopQrCycle();
+  $("qr-next").hidden = true;
   renderQr("loci-join:" + currentGame.join_code);
   $("qr-caption").textContent =
     `join code ${fmtCode(currentGame.join_code)} - players scan this (Games \u2192 Scan QR)`;
@@ -818,23 +820,26 @@ async function showPackQr() {
   if (error) return status(error.message, true);
   const frames = buildPackFrames(currentGame, qs || []);
   if (frames.length === 0) return status("No placed questions to pack.", true);
-  // Two frames at once: the scanner decodes both per camera frame. Pair-stepping
-  // by 2 still walks every frame when the count is odd.
+  // Two STATIC frames at once, advanced manually: auto-cycling wasted decodes on
+  // mid-transition camera frames. The scanner names the frames it still needs;
+  // advance when the visible pair is in. Pair-stepping by 2 walks every frame
+  // even with odd counts.
+  if (frames.length === 1) {
+    renderQr(frames[0]);
+    $("qr-caption").textContent = "single-frame pack - one scan does it";
+    $("qr-next").hidden = true;
+    return;
+  }
   let i = 0;
-  const tick = () => {
-    if (frames.length === 1) {
-      renderQr(frames[0]);
-      $("qr-caption").textContent = "single-frame pack - one scan does it";
-      return;
-    }
+  const show = () => {
     const j = (i + 1) % frames.length;
     renderQrPair(frames[i], frames[j]);
     $("qr-caption").textContent =
-      `frames ${i + 1} + ${j + 1} / ${frames.length} - the phone scans until all arrive (any order)`;
-    i = (i + 2) % frames.length;
+      `frames ${i + 1} + ${j + 1} / ${frames.length} - the scanner names the frames it needs; advance when this pair is in`;
   };
-  tick();
-  if (frames.length > 1) qrTimer = setInterval(tick, 300);
+  show();
+  $("qr-next").hidden = frames.length <= 2;
+  $("qr-next").onclick = () => { i = (i + 2) % frames.length; show(); };
 }
 
 $("g-qr").onclick = () => {
