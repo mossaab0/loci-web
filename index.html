@@ -809,7 +809,10 @@ async function showPackQr() {
     i = (i + 1) % frames.length;
   };
   tick();
-  if (frames.length > 1) qrTimer = setInterval(tick, 500);
+  // 300 ms/frame: the scanner samples the cycle at random, so the wait for the
+  // last missing frame scales with cycle length - shorter beats 2 fps measurably
+  // on a 10-frame pack while each frame still spans several camera exposures.
+  if (frames.length > 1) qrTimer = setInterval(tick, 300);
 }
 
 $("g-qr").onclick = () => {
