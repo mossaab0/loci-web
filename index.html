@@ -813,7 +813,10 @@ async function showPackQr() {
 }
 
 $("g-qr").onclick = () => {
-  $("qr-pack-tab").disabled = currentGame.status !== "started";
+  const started = currentGame.status === "started";
+  $("qr-pack-tab").disabled = !started;
+  $("qr-pack-tab").title = started ? ""
+    : "Available once the game starts — the pack carries the game clock and the answers.";
   $("qr-back").classList.remove("hidden");
   showJoinQr();
 };
