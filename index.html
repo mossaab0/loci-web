@@ -212,7 +212,7 @@
         <button id="qr-join-tab">Invite</button>
         <button id="qr-pack-tab">Offline pack</button>
       </div>
-      <img id="qr-img" alt="QR" style="width:min(70vw,420px);margin-top:12px;image-rendering:pixelated;">
+      <img id="qr-img" alt="QR" style="width:min(78vw,540px);margin-top:12px;image-rendering:pixelated;">
       <p id="qr-caption" class="muted"></p>
       <div class="row" style="justify-content:flex-end;">
         <button id="qr-close">Close</button>
@@ -711,7 +711,7 @@ function renderPins() {
 // QR codes: Invite is the same static loci-join payload the app shows. Offline
 // pack is the animated LQ1 frame sequence, byte-compatible with the app's
 // OfflinePack codec (JSON -> raw deflate -> base64; CRC-32 over the base64 text;
-// 500-char chunks; 2 fps round-robin - the scanner assembles in any order).
+// 800-char chunks; round-robin at ~3 fps - the scanner assembles in any order).
 
 let qrTimer = null;
 
@@ -766,10 +766,10 @@ function buildPackFrames(game, questions) {
   const blob = bytesToBase64(pako.deflateRaw(new TextEncoder().encode(JSON.stringify(pack)), { level: 9 }));
   const crc = crc32Hex(blob);
   const id8 = game.id.slice(0, 8).replace(/-/g, "");
-  const total = Math.ceil(blob.length / 500);
+  const total = Math.ceil(blob.length / 800);   // 800-char chunks - matches OfflinePack.ChunkChars
   const frames = [];
   for (let i = 0; i < total; i++)
-    frames.push(`LQ1|${id8}|${i}|${total}|${crc}|${blob.slice(i * 500, (i + 1) * 500)}`);
+    frames.push(`LQ1|${id8}|${i}|${total}|${crc}|${blob.slice(i * 800, (i + 1) * 800)}`);
   return frames;
 }
 
