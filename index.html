@@ -207,14 +207,14 @@
 
   <!-- QR modal: invite (static) + offline pack (animated sequence) -->
   <div id="qr-back" class="modal-back hidden">
-    <div class="modal" style="text-align:center;">
+    <div class="modal" style="text-align:center;width:min(1100px,94vw);">
       <div class="row" style="justify-content:center;">
         <button id="qr-join-tab">Invite</button>
         <button id="qr-pack-tab">Offline pack</button>
       </div>
       <div style="display:flex;gap:12px;justify-content:center;align-items:center;margin-top:12px;">
-        <img id="qr-img" alt="QR" style="width:min(78vw,540px);image-rendering:pixelated;">
-        <img id="qr-img2" alt="QR" style="width:min(38vw,460px);image-rendering:pixelated;" hidden>
+        <img id="qr-img" alt="QR" style="max-width:540px;image-rendering:pixelated;">
+        <img id="qr-img2" alt="QR" style="max-width:540px;image-rendering:pixelated;" hidden>
       </div>
       <p id="qr-caption" class="muted"></p>
       <div class="row" style="justify-content:flex-end;">
@@ -784,13 +784,14 @@ function qrDataUrl(payload) {
 }
 
 function renderQr(payload) {
-  $("qr-img").style.width = "min(78vw,540px)";
+  $("qr-img").style.width = "min(90%, 540px)";
   $("qr-img").src = qrDataUrl(payload);
   $("qr-img2").hidden = true;
 }
 
 function renderQrPair(a, b) {
-  $("qr-img").style.width = "min(38vw,460px)";
+  $("qr-img").style.width = "calc(50% - 6px)";
+  $("qr-img2").style.width = "calc(50% - 6px)";
   $("qr-img").src = qrDataUrl(a);
   $("qr-img2").src = qrDataUrl(b);
   $("qr-img2").hidden = false;
