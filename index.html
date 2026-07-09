@@ -212,7 +212,10 @@
         <button id="qr-join-tab">Invite</button>
         <button id="qr-pack-tab">Offline pack</button>
       </div>
-      <img id="qr-img" alt="QR" style="width:min(78vw,540px);margin-top:12px;image-rendering:pixelated;">
+      <div style="display:flex;gap:12px;justify-content:center;align-items:center;margin-top:12px;">
+        <img id="qr-img" alt="QR" style="width:min(78vw,540px);image-rendering:pixelated;">
+        <img id="qr-img2" alt="QR" style="width:min(38vw,460px);image-rendering:pixelated;" hidden>
+      </div>
       <p id="qr-caption" class="muted"></p>
       <div class="row" style="justify-content:flex-end;">
         <button id="qr-close">Close</button>
@@ -773,11 +776,24 @@ function buildPackFrames(game, questions) {
   return frames;
 }
 
-function renderQr(payload) {
+function qrDataUrl(payload) {
   const qr = qrcode(0, "M");   // auto version, ECC M - the spec the app scans at
   qr.addData(payload);
   qr.make();
-  $("qr-img").src = qr.createDataURL(6, 8);
+  return qr.createDataURL(6, 8);
+}
+
+function renderQr(payload) {
+  $("qr-img").style.width = "min(78vw,540px)";
+  $("qr-img").src = qrDataUrl(payload);
+  $("qr-img2").hidden = true;
+}
+
+function renderQrPair(a, b) {
+  $("qr-img").style.width = "min(38vw,460px)";
+  $("qr-img").src = qrDataUrl(a);
+  $("qr-img2").src = qrDataUrl(b);
+  $("qr-img2").hidden = false;
 }
 
 function stopQrCycle() {
@@ -801,17 +817,22 @@ async function showPackQr() {
   if (error) return status(error.message, true);
   const frames = buildPackFrames(currentGame, qs || []);
   if (frames.length === 0) return status("No placed questions to pack.", true);
+  // Two frames at once: the scanner decodes both per camera frame. Pair-stepping
+  // by 2 still walks every frame when the count is odd.
   let i = 0;
   const tick = () => {
-    renderQr(frames[i]);
+    if (frames.length === 1) {
+      renderQr(frames[0]);
+      $("qr-caption").textContent = "single-frame pack - one scan does it";
+      return;
+    }
+    const j = (i + 1) % frames.length;
+    renderQrPair(frames[i], frames[j]);
     $("qr-caption").textContent =
-      `frame ${i + 1}/${frames.length} - the phone scans until all frames arrive (any order)`;
-    i = (i + 1) % frames.length;
+      `frames ${i + 1} + ${j + 1} / ${frames.length} - the phone scans until all arrive (any order)`;
+    i = (i + 2) % frames.length;
   };
   tick();
-  // 300 ms/frame: the scanner samples the cycle at random, so the wait for the
-  // last missing frame scales with cycle length - shorter beats 2 fps measurably
-  // on a 10-frame pack while each frame still spans several camera exposures.
   if (frames.length > 1) qrTimer = setInterval(tick, 300);
 }
 
