@@ -162,7 +162,14 @@
           <span class="muted">where the placed questions are</span>
         </div>
         <div id="q-map" style="height:360px;border-radius:10px;" class="hidden"></div>
-        <p id="map-empty" class="muted">Markers appear here once questions are placed in the app.</p>
+        <div id="map-tools" class="row hidden" style="margin-top:10px;">
+          <button id="b-draw">Draw boundary</button>
+          <button id="b-clear" disabled>Clear</button>
+          <span id="b-hint" class="muted"></span>
+          <span style="margin-left:auto;"></span>
+          <button id="b-scatter" class="confirm" disabled>Scatter unplaced</button>
+        </div>
+        <p id="map-empty" class="muted">Markers appear here once questions are placed (in the app, or by scattering inside a drawn boundary).</p>
       </div>
     </div>
 
@@ -639,11 +646,13 @@ $("m-save").onclick = async () => {
 let qMap = null, qMapPins = null, qMapPlaced = [];
 
 function updateMap(questions) {
-  qMapPlaced = (questions || []).filter(
+  qAllQuestions = questions || [];
+  qMapPlaced = qAllQuestions.filter(
     (q) => q.gps_lat != null && q.gps_lon != null && (q.gps_lat !== 0 || q.gps_lon !== 0));
-  $("q-map").classList.toggle("hidden", qMapPlaced.length === 0);
+  $("q-map").classList.remove("hidden");
+  $("map-tools").classList.toggle("hidden", currentGame.status !== "draft");
   $("map-empty").classList.toggle("hidden", qMapPlaced.length > 0);
-  if (qMapPlaced.length === 0) { if (qMapPins) qMapPins.clearLayers(); return; }
+  refreshBoundaryButtons();
 
   if (!qMap) {
     qMap = L.map("q-map", { scrollWheelZoom: true });
@@ -653,15 +662,103 @@ function updateMap(questions) {
     }).addTo(qMap);
     qMapPins = L.layerGroup().addTo(qMap);
     qMap.on("zoomend", renderPins);   // clusters depend on the zoom level
+    qMap.on("click", onMapClick);     // boundary drawing
+    // No pins to fit? Center on the browser's location so drawing can start.
+    if (qMapPlaced.length === 0) {
+      qMap.setView([20, 0], 2);
+      if (navigator.geolocation)
+        navigator.geolocation.getCurrentPosition(
+          (pos) => qMap.setView([pos.coords.latitude, pos.coords.longitude], 16),
+          () => {});
+    }
   }
   renderPins();
   // The container may have just been unhidden - Leaflet needs a size refresh
   // before fitBounds computes anything sensible.
   setTimeout(() => {
     qMap.invalidateSize();
-    qMap.fitBounds(L.latLngBounds(qMapPlaced.map((q) => [q.gps_lat, q.gps_lon])).pad(0.3), { maxZoom: 18 });
+    if (qMapPlaced.length > 0)
+      qMap.fitBounds(L.latLngBounds(qMapPlaced.map((q) => [q.gps_lat, q.gps_lon])).pad(0.3), { maxZoom: 18 });
   }, 60);
 }
+
+// ── Boundary drawing + scatter ───────────────────────────────────────────────
+// Draw a polygon; every unplaced question gets a random GPS spot inside it.
+// GPS-only placement (no AR pose/anchor) - exactly what visibility-mode hunting
+// uses; individual questions can still be re-placed in AR for cm accuracy.
+
+let qAllQuestions = [];
+let boundary = [];
+let boundaryLayer = null;
+let drawing = false;
+
+function onMapClick(e) {
+  if (!drawing) return;
+  boundary.push([e.latlng.lat, e.latlng.lng]);
+  redrawBoundary();
+}
+
+function redrawBoundary() {
+  if (boundaryLayer) { boundaryLayer.remove(); boundaryLayer = null; }
+  if (boundary.length >= 2)
+    boundaryLayer = L.polygon(boundary, { color: "#b04a6e", weight: 2, fillOpacity: 0.08 }).addTo(qMap);
+  refreshBoundaryButtons();
+}
+
+function refreshBoundaryButtons() {
+  const unplaced = qAllQuestions.filter((q) => q.gps_lat == null && q.local_x == null);
+  $("b-draw").textContent = drawing ? "Done drawing" : "Draw boundary";
+  $("b-clear").disabled = boundary.length === 0;
+  $("b-scatter").disabled = boundary.length < 3 || unplaced.length === 0;
+  $("b-scatter").textContent = `Scatter unplaced (${unplaced.length})`;
+  $("b-hint").textContent = drawing ? "click the map to add corners"
+    : boundary.length >= 3 ? `boundary: ${boundary.length} corners`
+    : "";
+}
+
+$("b-draw").onclick = () => { drawing = !drawing; refreshBoundaryButtons(); };
+$("b-clear").onclick = () => { boundary = []; drawing = false; redrawBoundary(); };
+
+function pointInPoly(lat, lng, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [yi, xi] = poly[i], [yj, xj] = poly[j];
+    if ((yi > lat) !== (yj > lat) && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi)
+      inside = !inside;
+  }
+  return inside;
+}
+
+function randomInBoundary() {
+  let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+  for (const [lat, lng] of boundary) {
+    minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat);
+    minLng = Math.min(minLng, lng); maxLng = Math.max(maxLng, lng);
+  }
+  for (let t = 0; t < 300; t++) {   // rejection sampling in the bbox
+    const lat = minLat + Math.random() * (maxLat - minLat);
+    const lng = minLng + Math.random() * (maxLng - minLng);
+    if (pointInPoly(lat, lng, boundary)) return { lat, lng };
+  }
+  return null;
+}
+
+$("b-scatter").onclick = async () => {
+  const unplaced = qAllQuestions.filter((q) => q.gps_lat == null && q.local_x == null);
+  if (boundary.length < 3 || unplaced.length === 0) return;
+  $("b-scatter").disabled = true;
+  let done = 0;
+  for (const q of unplaced) {
+    const p = randomInBoundary();
+    if (!p) break;   // degenerate polygon
+    const { error } = await sb.from("game_questions")
+      .update({ gps_lat: p.lat, gps_lon: p.lng }).eq("id", q.id);
+    if (error) { status(error.message, true); break; }
+    done++;
+  }
+  status(`Scattered ${done} question${done === 1 ? "" : "s"} inside the boundary.`);
+  loadQuestions();
+};
 
 // Zoom-aware clustering: questions whose pins would overlap AT THIS zoom merge
 // into one pill ("1,2") that lists each member in its popup; zooming in grows
