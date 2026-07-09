@@ -708,10 +708,9 @@ function renderPins() {
   }
 }
 
-// QR codes: Invite is the same static loci-join payload the app shows. Offline
-// pack is the animated LQ1 frame sequence, byte-compatible with the app's
-// OfflinePack codec (JSON -> raw deflate -> base64; CRC-32 over the base64 text;
-// 800-char chunks; round-robin at ~3 fps - the scanner assembles in any order).
+// QR codes: Invite is the same static loci-join payload the app shows. The
+// offline pack cycles LQ2 fountain frames, byte-compatible with the app's
+// OfflinePack codec (JSON -> raw deflate -> 570-byte chunks -> XOR frames).
 
 let qrTimer = null;
 
@@ -725,10 +724,10 @@ const crcTable = (() => {
   return t;
 })();
 
-function crc32Hex(str) {   // base64 text is ASCII, so charCodeAt == byte
+function crc32HexBytes(bytes) {
   let crc = 0xFFFFFFFF;
-  for (let i = 0; i < str.length; i++)
-    crc = crcTable[(crc ^ str.charCodeAt(i)) & 0xFF] ^ (crc >>> 8);
+  for (let i = 0; i < bytes.length; i++)
+    crc = crcTable[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
   return ((crc ^ 0xFFFFFFFF) >>> 0).toString(16).padStart(8, "0");
 }
 
@@ -737,6 +736,67 @@ function bytesToBase64(bytes) {
   for (let i = 0; i < bytes.length; i += 0x8000)
     bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
   return btoa(bin);
+}
+
+// LQ2 fountain frames: frames 0..k-1 are the plain 570-byte chunks (systematic),
+// later frames XOR a seed-derived subset - the scanner completes from ANY ~k+2
+// distinct frames (no waiting for one specific missing frame). The seed->chunks
+// expansion is integer-only and mirrored bit-for-bit by OfflinePack.FrameIndices
+// in the app (floating point differs across runtimes; xorshift32 does not).
+
+const LQ2_CHUNK = 570;
+
+function lq2SeedRng(seed) {
+  let x = (Math.imul(seed, 2654435761) ^ 0x9E3779B9) >>> 0;
+  if (x === 0) x = 0x1234567;
+  const st = { x };
+  for (let i = 0; i < 3; i++) lq2Rng(st);
+  return st;
+}
+
+function lq2Rng(st) {
+  let x = st.x;
+  x = (x ^ (x << 13)) >>> 0;
+  x = (x ^ (x >>> 17)) >>> 0;
+  x = (x ^ (x << 5)) >>> 0;
+  st.x = x;
+  return x;
+}
+
+function lq2Indices(seed, k) {
+  if (seed < k) return [seed];
+  const st = lq2SeedRng(seed);
+  const r = lq2Rng(st) % 100;
+  let d = r < 10 ? 1 : r < 60 ? 2 : r < 80 ? 3 : r < 90 ? 4
+        : 5 + (lq2Rng(st) % Math.max(1, k >> 2));
+  if (d > k) d = k;
+  const picked = [];
+  while (picked.length < d) {
+    const idx = lq2Rng(st) % k;
+    if (!picked.includes(idx)) picked.push(idx);
+  }
+  return picked;
+}
+
+function lq2Frames(raw, id8) {
+  const k = Math.ceil(raw.length / LQ2_CHUNK);
+  const chunks = [];
+  for (let i = 0; i < k; i++) {
+    const c = new Uint8Array(LQ2_CHUNK);   // zero-padded tail
+    c.set(raw.subarray(i * LQ2_CHUNK, Math.min((i + 1) * LQ2_CHUNK, raw.length)));
+    chunks.push(c);
+  }
+  const crc = crc32HexBytes(raw);
+  const total = k === 1 ? 1 : k + Math.max(6, k);
+  const frames = [];
+  const xor = new Uint8Array(LQ2_CHUNK);
+  for (let s = 0; s < total; s++) {
+    xor.fill(0);
+    for (const idx of lq2Indices(s, k))
+      for (let b = 0; b < LQ2_CHUNK; b++) xor[b] ^= chunks[idx][b];
+    frames.push(`LQ2|${id8}|${s}|${k}|${raw.length}|${crc}|${bytesToBase64(xor)}`);
+  }
+  return frames;
 }
 
 function buildPackFrames(game, questions) {
@@ -763,14 +823,8 @@ function buildPackFrames(game, questions) {
         lo: q.gps_lon ?? 0,
       })),
   };
-  const blob = bytesToBase64(pako.deflateRaw(new TextEncoder().encode(JSON.stringify(pack)), { level: 9 }));
-  const crc = crc32Hex(blob);
-  const id8 = game.id.slice(0, 8).replace(/-/g, "");
-  const total = Math.ceil(blob.length / 800);   // 800-char chunks - matches OfflinePack.ChunkChars
-  const frames = [];
-  for (let i = 0; i < total; i++)
-    frames.push(`LQ1|${id8}|${i}|${total}|${crc}|${blob.slice(i * 800, (i + 1) * 800)}`);
-  return frames;
+  const raw = pako.deflateRaw(new TextEncoder().encode(JSON.stringify(pack)), { level: 9 });
+  return lq2Frames(raw, game.id.slice(0, 8).replace(/-/g, ""));
 }
 
 function renderQr(payload) {
