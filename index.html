@@ -315,9 +315,37 @@ let modalTarget = null;       // {kind:'question'|'bank', row}
 // ── Auth ────────────────────────────────────────────────────────────────────
 
 async function init() {
-  const { data: { session } } = await sb.auth.getSession();
-  if (session) enter(session); else showSignin();
+  try {
+    // Surface a provider bounce-back error (#error=access_denied&error_description=…)
+    // — it used to be silently discarded, leaving the user on sign-in with no clue.
+    const hash = new URLSearchParams(location.hash.startsWith("#") ? location.hash.slice(1) : "");
+    if (hash.get("error")) {
+      status(hash.get("error_description") || hash.get("error"), true);
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+    const { data: { session } } = await sb.auth.getSession();
+    if (session) enter(session); else showSignin();
+  } catch (e) {
+    // e.g. a corrupt localStorage session blob — without this the page stays blank.
+    showSignin();
+    status(String(e && e.message || e), true);
+  }
 }
+
+// Refresh-token expiry / sign-out elsewhere: return to sign-in instead of leaving
+// a dead games view that surfaces raw "JWT expired" on every click.
+let signingOut = false;
+sb.auth.onAuthStateChange((event, session) => {
+  if (event === "SIGNED_OUT" || (!session && uid)) {
+    if (signingOut) return;   // manual sign-out reloads on its own
+    uid = null;
+    currentGame = null;
+    $("modal-back").classList.add("hidden");
+    $("qr-back").classList.add("hidden");
+    showSignin();
+    status(t("signin.expired"), true);
+  }
+});
 
 function showSignin() {
   $("view-signin").classList.remove("hidden");
@@ -343,6 +371,7 @@ $("si-go").onclick = async () => {
   status(t("signin.progress"));
   const { data, error } = await sb.auth.signInWithPassword({ email, password });
   if (error) return status(error.message, true);
+  if (!data || !data.session) return status(t("signin.no_session"), true);   // MFA/confirm flows
   status("");
   enter(data.session);
 };
@@ -361,7 +390,11 @@ const oauth = (provider) => async () => {
 $("si-google").onclick = oauth("google");
 $("si-apple").onclick = oauth("apple");
 
-$("signout").onclick = async () => { await sb.auth.signOut(); location.reload(); };
+$("signout").onclick = async () => {
+  signingOut = true;
+  try { await sb.auth.signOut(); } catch (_) {}
+  location.replace(location.pathname + location.search);   // reload without any stale #hash
+};
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
 
@@ -422,6 +455,8 @@ $("ng-go").onclick = async () => {
 async function openGame(id) {
   const { data: g, error } = await sb.from("games").select("*").eq("id", id).single();
   if (error) return status(error.message, true);
+  // A boundary drawn for game A must never scatter game B's questions.
+  if (!currentGame || currentGame.id !== id) resetBoundary();
   currentGame = g;
   $("view-games").classList.add("hidden");
   $("view-game").classList.remove("hidden");
@@ -795,6 +830,12 @@ function refreshBoundaryButtons() {
 $("b-draw").onclick = () => { drawing = !drawing; refreshBoundaryButtons(); };
 $("b-clear").onclick = () => { boundary = []; drawing = false; redrawBoundary(); };
 
+function resetBoundary() {
+  boundary = [];
+  drawing = false;
+  if (boundaryLayer) { boundaryLayer.remove(); boundaryLayer = null; }
+}
+
 function pointInPoly(lat, lng, poly) {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -823,16 +864,17 @@ $("b-scatter").onclick = async () => {
   const unplaced = qAllQuestions.filter((q) => q.gps_lat == null && q.local_x == null);
   if (boundary.length < 3 || unplaced.length === 0) return;
   $("b-scatter").disabled = true;
-  let done = 0;
+  let done = 0, failed = null;
   for (const q of unplaced) {
     const p = randomInBoundary();
-    if (!p) break;   // degenerate polygon
+    if (!p) { failed = t("map.degenerate"); break; }
     const { error } = await sb.from("game_questions")
       .update({ gps_lat: p.lat, gps_lon: p.lng }).eq("id", q.id);
-    if (error) { status(error.message, true); break; }
+    if (error) { failed = error.message; break; }
     done++;
   }
-  status(t("map.scattered", done));
+  // A failure must not masquerade as success ("Scattered 0" with no reason).
+  status(failed ? t("map.scatter_partial", done) + " — " + failed : t("map.scattered", done), !!failed);
   loadQuestions();
 };
 
