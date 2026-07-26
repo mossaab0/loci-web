@@ -72,10 +72,16 @@
   .settings-grid label { font-size: 12.5px; color: var(--ink-soft); display: flex; flex-direction: column; gap: 4px; }
   .hidden { display: none !important; }
   code.jc { background: var(--warm); padding: 2px 8px; border-radius: 6px; font-size: 15px; letter-spacing: .08em; }
-  /* Public-bank import: category checkboxes + review cards. */
+  /* Public-bank import: category checkboxes + review cards. Subcategories arrive as
+     "parent / child" strings and render grouped: one .p-group row per parent, its bold
+     parent checkbox first (select-all), then the child pills. */
+  #p-cats { flex-direction: column; align-items: stretch; gap: 8px; }
+  #p-cats .p-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   #p-cats label { display: inline-flex; gap: 6px; align-items: center; background: var(--warm);
                   border-radius: 999px; padding: 6px 14px; font-size: 13.5px; cursor: pointer; }
-  #p-cats label:has(input:checked) { background: #dcedd8; outline: 2px solid var(--confirm); }
+  #p-cats label:has(input.p-parent) { font-weight: 700; background: var(--neutral); }
+  #p-cats label:has(input:checked), #p-cats label:has(input:indeterminate)
+    { background: #dcedd8; outline: 2px solid var(--confirm); }
   .pub-q { background: var(--warm); border-radius: 12px; padding: 14px; margin-bottom: 10px; }
   .pub-q .correct { color: #3c6b38; font-weight: 700; }
 </style>
@@ -723,7 +729,20 @@ $("q-import").onclick = () => {
 $("p-lang").onchange = () => loadPubCategories();
 
 // Categories are per-language display strings discovered from the data — never a
-// hardcoded list.
+// hardcoded list. Subcategories are encoded as "parent / child" (exact separator,
+// see backend/seeds/README.md): children group under a bold parent checkbox that
+// selects/deselects them all; only leaf checkboxes carry a category value.
+const PUB_SEP = " / ";
+
+function pubLeaf(box, value, text) {
+  const label = document.createElement("label");
+  label.innerHTML = `<input type="checkbox" class="p-leaf"><span dir="auto"></span>`;
+  label.querySelector("input").value = value;
+  label.querySelector("span").textContent = text;
+  box.appendChild(label);
+  return label.querySelector("input");
+}
+
 async function loadPubCategories() {
   const box = $("p-cats");
   box.innerHTML = `<span class="muted">${esc(t("pub.loading"))}</span>`;
@@ -732,16 +751,39 @@ async function loadPubCategories() {
   if (error) { box.innerHTML = ""; return pErr(error.message); }
   box.innerHTML = "";
   if (!data.length) return box.innerHTML = `<span class="muted">${esc(t("pub.no_categories"))}</span>`;
-  for (const c of data) {
-    const label = document.createElement("label");
-    label.innerHTML = `<input type="checkbox"><span dir="auto"></span>`;
-    label.querySelector("input").value = c.category;
-    label.querySelector("span").textContent = `${c.category} (${c.question_count})`;
-    box.appendChild(label);
+  // The RPC orders by category, so a parent's children are already consecutive.
+  for (let i = 0; i < data.length; i++) {
+    const sep = data[i].category.indexOf(PUB_SEP);
+    if (sep < 0) { pubLeaf(box, data[i].category, `${data[i].category} (${data[i].question_count})`); continue; }
+
+    const parent = data[i].category.slice(0, sep);
+    const group = [];
+    while (i < data.length && data[i].category.startsWith(parent + PUB_SEP)) group.push(data[i++]);
+    i--;
+
+    const wrap = document.createElement("div");
+    wrap.className = "p-group";
+    const pl = document.createElement("label");
+    pl.innerHTML = `<input type="checkbox" class="p-parent"><span dir="auto"></span>`;
+    pl.querySelector("span").textContent =
+      `${parent} (${group.reduce((n, c) => n + Number(c.question_count), 0)})`;
+    wrap.appendChild(pl);
+    const parentCb = pl.querySelector("input");
+    const leafCbs = group.map((c) =>
+      pubLeaf(wrap, c.category, `${c.category.slice(sep + PUB_SEP.length)} (${c.question_count})`));
+
+    parentCb.onchange = () => leafCbs.forEach((cb) => (cb.checked = parentCb.checked));
+    for (const cb of leafCbs) cb.onchange = () => {
+      const on = leafCbs.filter((x) => x.checked).length;
+      parentCb.checked = on === leafCbs.length;
+      parentCb.indeterminate = on > 0 && on < leafCbs.length;
+    };
+    box.appendChild(wrap);
   }
 }
 
-const pubCats = () => [...$("p-cats").querySelectorAll("input:checked")].map((i) => i.value);
+// Leaf checkboxes only — parent checkboxes are select-all controls with no value.
+const pubCats = () => [...$("p-cats").querySelectorAll("input.p-leaf:checked")].map((i) => i.value);
 
 async function pubSample(count) {
   const { data, error } = await sb.rpc("sample_public_questions", {
