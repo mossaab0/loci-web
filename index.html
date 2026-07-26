@@ -72,6 +72,12 @@
   .settings-grid label { font-size: 12.5px; color: var(--ink-soft); display: flex; flex-direction: column; gap: 4px; }
   .hidden { display: none !important; }
   code.jc { background: var(--warm); padding: 2px 8px; border-radius: 6px; font-size: 15px; letter-spacing: .08em; }
+  /* Public-bank import: category checkboxes + review cards. */
+  #p-cats label { display: inline-flex; gap: 6px; align-items: center; background: var(--warm);
+                  border-radius: 999px; padding: 6px 14px; font-size: 13.5px; cursor: pointer; }
+  #p-cats label:has(input:checked) { background: #dcedd8; outline: 2px solid var(--confirm); }
+  .pub-q { background: var(--warm); border-radius: 12px; padding: 14px; margin-bottom: 10px; }
+  .pub-q .correct { color: #3c6b38; font-weight: 700; }
 </style>
 </head>
 <body>
@@ -152,6 +158,7 @@
           <h3 style="margin:0;" data-i18n="q.title">Questions</h3>
           <span class="muted" data-i18n="q.hint">place markers in the app; write content here</span>
           <span style="margin-left:auto;"></span>
+          <button id="q-import" data-i18n="pub.import">Add from public bank</button>
           <button id="q-add" class="primary" data-i18n="q.add">Add question</button>
         </div>
         <table id="q-table">
@@ -213,6 +220,46 @@
       <div class="row" style="justify-content:flex-end;margin-top:14px;">
         <button id="m-cancel" data-i18n="modal.cancel">Cancel</button>
         <button id="m-save" class="confirm" data-i18n="modal.save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Public-bank import modal: filter step (language → categories → count), then a
+       review step (accept/reject each sampled question; rejects draw replacements). -->
+  <div id="pub-back" class="modal-back hidden">
+    <div class="modal" style="width:min(760px,94vw);">
+      <h3 data-i18n="pub.title">Add from public bank</h3>
+      <div id="pub-filter">
+        <div class="row" style="margin-bottom:10px;">
+          <label class="muted"><span data-i18n="pub.language">Language</span></label>
+          <select id="p-lang"></select>
+          <span style="margin-left:auto;"></span>
+          <label class="muted"><span data-i18n="pub.count">How many</span></label>
+          <input id="p-count" type="number" min="1" max="20" value="5" style="width:80px;">
+        </div>
+        <p class="muted" style="margin:12px 0 6px;" data-i18n="pub.categories">Categories</p>
+        <div id="p-cats" class="row"></div>
+        <p id="p-error" class="muted" style="color:var(--danger);min-height:1.2em;margin:8px 0 0;"></p>
+        <div class="row" style="justify-content:flex-end;margin-top:14px;">
+          <button id="p-cancel" data-i18n="modal.cancel">Cancel</button>
+          <button id="p-fetch" class="confirm" data-i18n="pub.fetch">Fetch questions</button>
+        </div>
+      </div>
+      <div id="pub-review" class="hidden">
+        <div class="row" style="margin-bottom:10px;">
+          <strong id="p-kept"></strong>
+          <button id="p-minus" title="-">&minus;</button>
+          <button id="p-plus" title="+">+</button>
+          <span style="margin-left:auto;"></span>
+          <button id="p-acceptall" data-i18n="pub.accept_all">Accept all</button>
+        </div>
+        <div id="p-list" style="max-height:52vh;overflow:auto;"></div>
+        <p id="p-rerror" class="muted" style="min-height:1.2em;margin:8px 0 0;"></p>
+        <div class="row" style="justify-content:flex-end;margin-top:14px;">
+          <button id="p-refine" data-i18n="pub.refine">&larr; Filters</button>
+          <button id="p-cancel2" data-i18n="modal.cancel">Cancel</button>
+          <button id="p-add" class="confirm"></button>
+        </div>
       </div>
     </div>
   </div>
@@ -476,7 +523,7 @@ async function openGame(id) {
   $("s-radius").value = s.answer_radius_m ?? 5;
   $("s-rmode").value = s.radius_mode ?? "visibility";
   const draft = g.status === "draft";
-  for (const el of ["s-time", "s-base", "s-floor", "s-clock", "s-radius", "s-rmode", "s-save", "q-add"])
+  for (const el of ["s-time", "s-base", "s-floor", "s-clock", "s-radius", "s-rmode", "s-save", "q-add", "q-import"])
     $(el).disabled = !draft;
   loadQuestions();
 }
@@ -638,6 +685,190 @@ $("b-add").onclick = () => openModal({
   kind: "bank",
   row: { question: "", choices: ["", "", "", ""], correct_index: 0, tags: [] },
 });
+
+// ── Public bank import (curated pool, read-only; see 0018_public_questions.sql) ──
+// Filter step samples N random questions for one language + selected categories;
+// review step accepts/rejects each (rejects draw replacements, excluding everything
+// already shown) and finally batch-inserts the kept ones into the open draft game.
+
+let pubSeen = [];       // every id shown this modal session (kept or rejected)
+let pubPending = [];    // sampled, not yet accepted/rejected
+let pubAccepted = [];   // kept — inserted only on "Add {n} to game"
+let pubTarget = 0;
+let pubBusy = false;
+
+const pErr  = (msg) => { $("p-error").textContent = msg || ""; };
+const pRErr = (msg) => { $("p-rerror").textContent = msg || ""; };
+
+$("q-import").onclick = () => {
+  if (!currentGame || currentGame.status !== "draft") return;
+  pubSeen = []; pubPending = []; pubAccepted = []; pubTarget = 0;
+  pErr(""); pRErr("");
+  $("pub-filter").classList.remove("hidden");
+  $("pub-review").classList.add("hidden");
+  // The sample language defaults to the UI language but changes independently of it.
+  const sel = $("p-lang");
+  sel.innerHTML = "";
+  for (const l of I18N.languages) {
+    const o = document.createElement("option");
+    o.value = l.code;
+    o.textContent = l.nativeName;
+    sel.appendChild(o);
+  }
+  sel.value = I18N.languages.some((l) => l.code === lang) ? lang : "en";
+  $("pub-back").classList.remove("hidden");
+  loadPubCategories();
+};
+
+$("p-lang").onchange = () => loadPubCategories();
+
+// Categories are per-language display strings discovered from the data — never a
+// hardcoded list.
+async function loadPubCategories() {
+  const box = $("p-cats");
+  box.innerHTML = `<span class="muted">${esc(t("pub.loading"))}</span>`;
+  pErr("");
+  const { data, error } = await sb.rpc("list_public_categories", { p_language: $("p-lang").value });
+  if (error) { box.innerHTML = ""; return pErr(error.message); }
+  box.innerHTML = "";
+  if (!data.length) return box.innerHTML = `<span class="muted">${esc(t("pub.no_categories"))}</span>`;
+  for (const c of data) {
+    const label = document.createElement("label");
+    label.innerHTML = `<input type="checkbox"><span dir="auto"></span>`;
+    label.querySelector("input").value = c.category;
+    label.querySelector("span").textContent = `${c.category} (${c.question_count})`;
+    box.appendChild(label);
+  }
+}
+
+const pubCats = () => [...$("p-cats").querySelectorAll("input:checked")].map((i) => i.value);
+
+async function pubSample(count) {
+  const { data, error } = await sb.rpc("sample_public_questions", {
+    p_language: $("p-lang").value, p_categories: pubCats(),
+    p_count: count, p_exclude: pubSeen,
+  });
+  if (error) throw error;
+  for (const q of data) pubSeen.push(q.id);
+  return data;
+}
+
+$("p-fetch").onclick = async () => {
+  if (pubBusy) return;
+  if (!pubCats().length) return pErr(t("pub.need_category"));
+  const n = Math.min(20, Math.max(1, +$("p-count").value || 5));
+  pubBusy = true; pErr("");
+  try {
+    const items = await pubSample(n);
+    if (!items.length) return pErr(t("pub.empty_pool"));
+    pubPending = items;
+    // Target counts earlier keeps too (coming back through "← Filters").
+    pubTarget = pubAccepted.length + items.length;
+    pRErr(items.length < n ? t("pub.short_pool", items.length) : "");
+    $("pub-filter").classList.add("hidden");
+    $("pub-review").classList.remove("hidden");
+    renderPub();
+  } catch (e) { pErr(e.message); }
+  finally { pubBusy = false; }
+};
+
+function renderPub() {
+  $("p-kept").textContent = t("pub.kept", pubAccepted.length, pubTarget);
+  $("p-add").textContent = t("pub.add_n", pubAccepted.length);
+  $("p-add").disabled = pubAccepted.length === 0;
+  $("p-acceptall").disabled = pubPending.length === 0;
+  const box = $("p-list");
+  box.innerHTML = "";
+  for (const q of pubPending) {
+    const div = document.createElement("div");
+    div.className = "pub-q";
+    div.innerHTML = `<div dir="auto"><strong></strong></div>
+      <div dir="auto" class="muted" style="margin:6px 0 10px;"></div>
+      <div class="row"><span class="pill draft" dir="auto"></span>
+        <span style="margin-left:auto;"></span>
+        <button class="confirm">${esc(t("pub.accept"))}</button>
+        <button class="danger">${esc(t("pub.reject"))}</button></div>`;
+    div.querySelector("strong").textContent = q.question;
+    div.querySelector(".muted").innerHTML = (q.choices || [])
+      .map((c, i) => i === q.correct_index
+        ? `<span class="correct">${letters[i]}. ${esc(c)} ✓</span>`
+        : `${letters[i]}. ${esc(c)}`)
+      .join("<br>");
+    div.querySelector(".pill").textContent = q.category;
+    const [acc, rej] = div.querySelectorAll("button");
+    acc.onclick = () => {
+      pubAccepted.push(q);
+      pubPending = pubPending.filter((x) => x !== q);
+      renderPub();
+    };
+    rej.onclick = () => pubReject(q);
+    box.appendChild(div);
+  }
+}
+
+async function pubReject(q) {
+  if (pubBusy) return;
+  pubBusy = true;
+  pubPending = pubPending.filter((x) => x !== q);
+  try {
+    const more = await pubSample(1);
+    if (more.length) pubPending.push(more[0]);
+    else { pubTarget = pubAccepted.length + pubPending.length; pRErr(t("pub.pool_exhausted")); }
+  } catch (e) { pRErr(e.message); pubTarget = pubAccepted.length + pubPending.length; }
+  finally { pubBusy = false; renderPub(); }
+}
+
+$("p-acceptall").onclick = () => {
+  pubAccepted.push(...pubPending);
+  pubPending = [];
+  renderPub();
+};
+
+$("p-plus").onclick = async () => {
+  if (pubBusy) return;
+  pubBusy = true; pRErr("");
+  try {
+    const more = await pubSample(1);
+    if (!more.length) pRErr(t("pub.pool_exhausted"));
+    else { pubPending.push(more[0]); pubTarget++; }
+  } catch (e) { pRErr(e.message); }
+  finally { pubBusy = false; renderPub(); }
+};
+
+$("p-minus").onclick = () => {
+  // Drops the newest unreviewed card; keeps are permanent, so the floor is the
+  // accepted count.
+  if (pubPending.length) pubPending.pop();
+  pubTarget = pubAccepted.length + pubPending.length;
+  renderPub();
+};
+
+$("p-refine").onclick = () => {
+  // Back to the filters, keeping this session's accepts (and the exclude list).
+  pubPending = [];
+  pRErr("");
+  $("pub-review").classList.add("hidden");
+  $("pub-filter").classList.remove("hidden");
+};
+
+$("p-cancel").onclick = $("p-cancel2").onclick = () => $("pub-back").classList.add("hidden");
+
+$("p-add").onclick = async () => {
+  if (pubBusy || !pubAccepted.length) return;
+  pubBusy = true;
+  const { count } = await sb.from("game_questions")
+    .select("*", { count: "exact", head: true }).eq("game_id", currentGame.id);
+  const rows = pubAccepted.map((q, i) => ({
+    game_id: currentGame.id, order_index: (count ?? 0) + i,
+    question: q.question, choices: q.choices, correct_index: q.correct_index,
+  }));
+  const { error } = await sb.from("game_questions").insert(rows);
+  pubBusy = false;
+  if (error) return pRErr(error.message);   // e.g. game left draft mid-review (RLS)
+  $("pub-back").classList.add("hidden");
+  status(t("pub.added", rows.length));
+  loadQuestions();
+};
 
 // ── Editor modal (game questions + bank entries share it) ──────────────────
 // Choice rows are dynamic: 2–6, default 4 for new content.
