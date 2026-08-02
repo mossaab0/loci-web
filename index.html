@@ -628,13 +628,13 @@ $("s-save").onclick = async () => {
 };
 
 $("g-start").onclick = async () => {
-  // Placement happens in the app; the server only validates text/choices. Warn if
-  // markers are missing — an unplaced question can't be found in the hunt.
+  // Placement happens in the app; the server only validates text/choices. A game
+  // cannot go live with unplaced questions — they can't be found in the hunt.
   const { data: qs } = await sb.from("game_questions")
     .select("gps_lat, local_x").eq("game_id", currentGame.id);
   const unplaced = (qs || []).filter((q) => q.gps_lat == null && q.local_x == null).length;
-  const warn = unplaced > 0 ? t("game.confirm_start_warn", unplaced) : "";
-  if (!confirm(t("game.confirm_start") + warn)) return;
+  if (unplaced > 0) return status(t("game.start_blocked", unplaced), true);
+  if (!confirm(t("game.confirm_start"))) return;
   const { error } = await sb.rpc("start_game", { p_game: currentGame.id });
   if (error) return status(error.message, true);
   status(t("game.started"));
