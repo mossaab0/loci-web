@@ -634,6 +634,10 @@ $("g-start").onclick = async () => {
     .select("gps_lat, local_x").eq("game_id", currentGame.id);
   const unplaced = (qs || []).filter((q) => q.gps_lat == null && q.local_x == null).length;
   if (unplaced > 0) return status(t("game.start_blocked", unplaced), true);
+  // And someone must have joined — a hunt with zero players has nobody to start for.
+  const { count: playerCount } = await sb.from("game_leaderboard")
+    .select("*", { count: "exact", head: true }).eq("game_id", currentGame.id);
+  if (!playerCount) return status(t("game.start_no_players"), true);
   if (!confirm(t("game.confirm_start"))) return;
   const { error } = await sb.rpc("start_game", { p_game: currentGame.id });
   if (error) return status(error.message, true);
