@@ -231,7 +231,8 @@
   </div>
 
   <!-- Public-bank import modal: filter step (language → categories → count), then a
-       review step (accept/reject each sampled question; rejects draw replacements). -->
+       review step (reject draws a replacement, edit tweaks in place; the Add button
+       imports everything still on the list). -->
   <div id="pub-back" class="modal-back hidden">
     <div class="modal" style="width:min(760px,94vw);">
       <h3 data-i18n="pub.title">Add from public bank</h3>
@@ -241,7 +242,8 @@
           <select id="p-lang"></select>
           <span style="margin-left:auto;"></span>
           <label class="muted"><span data-i18n="pub.count">How many</span></label>
-          <input id="p-count" type="number" min="1" max="20" value="5" style="width:80px;">
+          <input id="p-count" type="range" min="10" max="50" step="1" value="10" style="width:140px;">
+          <strong id="p-count-val">10</strong>
         </div>
         <p class="muted" style="margin:12px 0 6px;" data-i18n="pub.categories">Categories</p>
         <div id="p-cats" class="row"></div>
@@ -254,10 +256,9 @@
       <div id="pub-review" class="hidden">
         <div class="row" style="margin-bottom:10px;">
           <strong id="p-kept"></strong>
+          <span style="margin-left:auto;"></span>
           <button id="p-minus" title="-">&minus;</button>
           <button id="p-plus" title="+">+</button>
-          <span style="margin-left:auto;"></span>
-          <button id="p-acceptall" data-i18n="pub.accept_all">Accept all</button>
         </div>
         <div id="p-list" style="max-height:52vh;overflow:auto;"></div>
         <p id="p-rerror" class="muted" style="min-height:1.2em;margin:8px 0 0;"></p>
@@ -698,8 +699,8 @@ $("b-add").onclick = () => openModal({
 // already shown) and finally batch-inserts the kept ones into the open draft game.
 
 let pubSeen = [];       // every id shown this modal session (kept or rejected)
-let pubPending = [];    // sampled, not yet accepted/rejected
-let pubAccepted = [];   // kept — inserted only on "Add {n} to game"
+let pubPending = [];    // sampled, not yet rejected — "Add" imports all of these
+let pubEditing = null;  // the pending entry currently open as an in-card form
 let pubTarget = 0;
 let pubBusy = false;
 
@@ -708,7 +709,7 @@ const pRErr = (msg) => { $("p-rerror").textContent = msg || ""; };
 
 $("q-import").onclick = () => {
   if (!currentGame || currentGame.status !== "draft") return;
-  pubSeen = []; pubPending = []; pubAccepted = []; pubTarget = 0;
+  pubSeen = []; pubPending = []; pubEditing = null; pubTarget = 0;
   pErr(""); pRErr("");
   $("pub-filter").classList.remove("hidden");
   $("pub-review").classList.add("hidden");
@@ -727,6 +728,7 @@ $("q-import").onclick = () => {
 };
 
 $("p-lang").onchange = () => loadPubCategories();
+$("p-count").oninput = () => { $("p-count-val").textContent = $("p-count").value; };
 
 // Categories are per-language display strings discovered from the data — never a
 // hardcoded list. Subcategories are encoded as "parent / child" (exact separator,
@@ -754,7 +756,7 @@ async function loadPubCategories() {
   // The RPC orders by category, so a parent's children are already consecutive.
   for (let i = 0; i < data.length; i++) {
     const sep = data[i].category.indexOf(PUB_SEP);
-    if (sep < 0) { pubLeaf(box, data[i].category, `${data[i].category} (${data[i].question_count})`); continue; }
+    if (sep < 0) { pubLeaf(box, data[i].category, data[i].category); continue; }
 
     const parent = data[i].category.slice(0, sep);
     const group = [];
@@ -765,12 +767,11 @@ async function loadPubCategories() {
     wrap.className = "p-group";
     const pl = document.createElement("label");
     pl.innerHTML = `<input type="checkbox" class="p-parent"><span dir="auto"></span>`;
-    pl.querySelector("span").textContent =
-      `${parent} (${group.reduce((n, c) => n + Number(c.question_count), 0)})`;
+    pl.querySelector("span").textContent = parent;
     wrap.appendChild(pl);
     const parentCb = pl.querySelector("input");
     const leafCbs = group.map((c) =>
-      pubLeaf(wrap, c.category, `${c.category.slice(sep + PUB_SEP.length)} (${c.question_count})`));
+      pubLeaf(wrap, c.category, c.category.slice(sep + PUB_SEP.length)));
 
     parentCb.onchange = () => leafCbs.forEach((cb) => (cb.checked = parentCb.checked));
     for (const cb of leafCbs) cb.onchange = () => {
@@ -798,14 +799,14 @@ async function pubSample(count) {
 $("p-fetch").onclick = async () => {
   if (pubBusy) return;
   if (!pubCats().length) return pErr(t("pub.need_category"));
-  const n = Math.min(20, Math.max(1, +$("p-count").value || 5));
+  const n = Math.min(50, Math.max(10, +$("p-count").value || 10));
   pubBusy = true; pErr("");
   try {
     const items = await pubSample(n);
     if (!items.length) return pErr(t("pub.empty_pool"));
     pubPending = items;
-    // Target counts earlier keeps too (coming back through "← Filters").
-    pubTarget = pubAccepted.length + items.length;
+    pubEditing = null;
+    pubTarget = items.length;
     pRErr(items.length < n ? t("pub.short_pool", items.length) : "");
     $("pub-filter").classList.add("hidden");
     $("pub-review").classList.remove("hidden");
@@ -815,20 +816,20 @@ $("p-fetch").onclick = async () => {
 };
 
 function renderPub() {
-  $("p-kept").textContent = t("pub.kept", pubAccepted.length, pubTarget);
-  $("p-add").textContent = t("pub.add_n", pubAccepted.length);
-  $("p-add").disabled = pubAccepted.length === 0;
-  $("p-acceptall").disabled = pubPending.length === 0;
+  $("p-kept").textContent = t("pub.kept", pubPending.length, pubTarget);
+  $("p-add").textContent = t("pub.add_n", pubPending.length);
+  $("p-add").disabled = pubPending.length === 0;
   const box = $("p-list");
   box.innerHTML = "";
   for (const q of pubPending) {
+    if (q === pubEditing) { box.appendChild(pubEditCard(q)); continue; }
     const div = document.createElement("div");
     div.className = "pub-q";
     div.innerHTML = `<div dir="auto"><strong></strong></div>
       <div dir="auto" class="muted" style="margin:6px 0 10px;"></div>
       <div class="row"><span class="pill draft" dir="auto"></span>
         <span style="margin-left:auto;"></span>
-        <button class="confirm">${esc(t("pub.accept"))}</button>
+        <button>${esc(t("pub.edit"))}</button>
         <button class="danger">${esc(t("pub.reject"))}</button></div>`;
     div.querySelector("strong").textContent = q.question;
     div.querySelector(".muted").innerHTML = (q.choices || [])
@@ -837,34 +838,65 @@ function renderPub() {
         : `${letters[i]}. ${esc(c)}`)
       .join("<br>");
     div.querySelector(".pill").textContent = q.category;
-    const [acc, rej] = div.querySelectorAll("button");
-    acc.onclick = () => {
-      pubAccepted.push(q);
-      pubPending = pubPending.filter((x) => x !== q);
-      renderPub();
-    };
+    const [edit, rej] = div.querySelectorAll("button");
+    edit.onclick = () => { pubEditing = q; renderPub(); };
     rej.onclick = () => pubReject(q);
     box.appendChild(div);
   }
 }
 
+// In-card edit form: tweak the text or move the correct mark, all in the pending
+// entry — nothing touches the game until "Add".
+function pubEditCard(q) {
+  const div = document.createElement("div");
+  div.className = "pub-q";
+  const ta = document.createElement("textarea");
+  ta.dir = "auto"; ta.rows = 2; ta.style.width = "100%";
+  ta.value = q.question;
+  div.appendChild(ta);
+  const inputs = [];
+  (q.choices || []).forEach((c, i) => {
+    const row = document.createElement("div");
+    row.className = "row"; row.style.margin = "6px 0";
+    const radio = document.createElement("input");
+    radio.type = "radio"; radio.name = "p-edit-correct"; radio.checked = i === q.correct_index;
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.dir = "auto"; inp.style.flex = "1";
+    inp.value = c;
+    row.appendChild(radio); row.appendChild(inp);
+    div.appendChild(row);
+    inputs.push({ radio, inp });
+  });
+  const btns = document.createElement("div");
+  btns.className = "row"; btns.style.justifyContent = "flex-end";
+  btns.innerHTML = `<button>${esc(t("modal.cancel"))}</button>
+    <button class="confirm">${esc(t("modal.save"))}</button>`;
+  const [cancel, save] = btns.querySelectorAll("button");
+  cancel.onclick = () => { pubEditing = null; renderPub(); };
+  save.onclick = () => {
+    q.question = ta.value;
+    q.choices = inputs.map((x) => x.inp.value);
+    const marked = inputs.findIndex((x) => x.radio.checked);
+    q.correct_index = marked < 0 ? 0 : marked;
+    pubEditing = null;
+    renderPub();
+  };
+  div.appendChild(btns);
+  return div;
+}
+
 async function pubReject(q) {
   if (pubBusy) return;
   pubBusy = true;
+  if (pubEditing === q) pubEditing = null;
   pubPending = pubPending.filter((x) => x !== q);
   try {
     const more = await pubSample(1);
-    if (more.length) pubPending.push(more[0]);
-    else { pubTarget = pubAccepted.length + pubPending.length; pRErr(t("pub.pool_exhausted")); }
-  } catch (e) { pRErr(e.message); pubTarget = pubAccepted.length + pubPending.length; }
+    if (more.length) pubPending.push(more[0]);   // replacement joins the end
+    else { pubTarget = pubPending.length; pRErr(t("pub.pool_exhausted")); }
+  } catch (e) { pRErr(e.message); pubTarget = pubPending.length; }
   finally { pubBusy = false; renderPub(); }
 }
-
-$("p-acceptall").onclick = () => {
-  pubAccepted.push(...pubPending);
-  pubPending = [];
-  renderPub();
-};
 
 $("p-plus").onclick = async () => {
   if (pubBusy) return;
@@ -878,16 +910,20 @@ $("p-plus").onclick = async () => {
 };
 
 $("p-minus").onclick = () => {
-  // Drops the newest unreviewed card; keeps are permanent, so the floor is the
-  // accepted count.
-  if (pubPending.length) pubPending.pop();
-  pubTarget = pubAccepted.length + pubPending.length;
+  // Drops the newest card off the end of the list.
+  if (pubPending.length) {
+    if (pubEditing === pubPending[pubPending.length - 1]) pubEditing = null;
+    pubPending.pop();
+  }
+  pubTarget = pubPending.length;
   renderPub();
 };
 
 $("p-refine").onclick = () => {
-  // Back to the filters, keeping this session's accepts (and the exclude list).
+  // Back to the filters; pending is discarded but the exclude list survives, so a
+  // re-fetch never re-serves what was already shown.
   pubPending = [];
+  pubEditing = null;
   pRErr("");
   $("pub-review").classList.add("hidden");
   $("pub-filter").classList.remove("hidden");
@@ -896,11 +932,11 @@ $("p-refine").onclick = () => {
 $("p-cancel").onclick = $("p-cancel2").onclick = () => $("pub-back").classList.add("hidden");
 
 $("p-add").onclick = async () => {
-  if (pubBusy || !pubAccepted.length) return;
+  if (pubBusy || !pubPending.length) return;
   pubBusy = true;
   const { count } = await sb.from("game_questions")
     .select("*", { count: "exact", head: true }).eq("game_id", currentGame.id);
-  const rows = pubAccepted.map((q, i) => ({
+  const rows = pubPending.map((q, i) => ({
     game_id: currentGame.id, order_index: (count ?? 0) + i,
     question: q.question, choices: q.choices, correct_index: q.correct_index,
   }));
