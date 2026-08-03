@@ -631,8 +631,14 @@ $("g-start").onclick = async () => {
   // Placement happens in the app; the server only validates text/choices. A game
   // cannot go live with unplaced questions — they can't be found in the hunt.
   const { data: qs } = await sb.from("game_questions")
-    .select("gps_lat, local_x").eq("game_id", currentGame.id);
-  const unplaced = (qs || []).filter((q) => q.gps_lat == null && q.local_x == null).length;
+    .select("gps_lat, local_x, question, choices").eq("game_id", currentGame.id);
+  if (!qs || qs.length === 0) return status(t("game.start_empty"), true);
+  // Same completeness rule as the app's IsComplete: text + 2 non-blank choices.
+  const incomplete = qs.filter((q) => !q.question || !q.question.trim()
+    || !Array.isArray(q.choices) || q.choices.length < 2
+    || q.choices.some((c) => !c || !c.trim())).length;
+  if (incomplete > 0) return status(t("game.start_incomplete", incomplete), true);
+  const unplaced = qs.filter((q) => q.gps_lat == null && q.local_x == null).length;
   if (unplaced > 0) return status(t("game.start_blocked", unplaced), true);
   // And someone must have joined — a hunt with zero players has nobody to start for.
   const { count: playerCount } = await sb.from("game_leaderboard")
