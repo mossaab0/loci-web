@@ -106,7 +106,6 @@
       <button id="si-go" class="primary" data-i18n="signin.go">Sign in</button>
       <div class="muted" style="text-align:center;" data-i18n="signin.or">or</div>
       <button id="si-google" data-i18n="signin.google">Continue with Google</button>
-      <button id="si-apple" data-i18n="signin.apple">Continue with Apple</button>
     </div>
   </div>
 
@@ -442,7 +441,6 @@ const oauth = (provider) => async () => {
   if (error) status(error.message, true);
 };
 $("si-google").onclick = oauth("google");
-$("si-apple").onclick = oauth("apple");
 
 $("signout").onclick = async () => {
   signingOut = true;
