@@ -513,6 +513,9 @@ async function openGame(id) {
   // A boundary drawn for game A must never scatter game B's questions.
   if (!currentGame || currentGame.id !== id) resetBoundary();
   currentGame = g;
+  // Reload the saved play area (drawn here or in the app) so it survives a reload
+  // and both surfaces agree on where the game is.
+  if (boundary.length === 0) boundary = parseBoundary(g.settings?.boundary);
   $("view-games").classList.add("hidden");
   $("view-game").classList.remove("hidden");
   $("g-name").textContent = g.name;
@@ -617,7 +620,10 @@ async function deleteQuestion(q) {
 }
 
 $("s-save").onclick = async () => {
+  // Spread the existing settings first: the app writes keys this form doesn't know
+  // about (the play-area boundary), and a bare object would silently delete them.
   const settings = {
+    ...(currentGame.settings || {}),
     time_limit_s: +$("s-time").value || 0,
     points_base: +$("s-base").value || 1000,
     points_floor_pct: Math.min(100, Math.max(0, +$("s-floor").value || 0)),
@@ -1110,6 +1116,7 @@ function updateMap(questions) {
     }
   }
   renderPins();
+  redrawBoundary();   // a play area loaded from settings must actually appear
   // The container may have just been unhidden - Leaflet needs a size refresh
   // before fitBounds computes anything sensible.
   setTimeout(() => {
@@ -1162,6 +1169,16 @@ function resetBoundary() {
   if (boundaryLayer) { boundaryLayer.remove(); boundaryLayer = null; }
 }
 
+// "lat,lng;lat,lng;…" — the same encoding the app writes into settings.boundary.
+function parseBoundary(encoded) {
+  if (!encoded) return [];
+  return encoded.split(";").reduce((acc, pair) => {
+    const [lat, lng] = pair.split(",").map(Number);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) acc.push([lat, lng]);
+    return acc;
+  }, []);
+}
+
 function pointInPoly(lat, lng, poly) {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -1201,8 +1218,19 @@ $("b-scatter").onclick = async () => {
   }
   // A failure must not masquerade as success ("Scattered 0" with no reason).
   status(failed ? t("map.scatter_partial", done) + " — " + failed : t("map.scattered", done), !!failed);
+  // Keep the drawn area with the game: the app's map and every player's map read it
+  // from settings, and a boundary that lived only in this tab helped nobody.
+  await saveBoundary();
   loadQuestions();
 };
+
+async function saveBoundary() {
+  if (!currentGame) return;
+  const encoded = boundary.map(([lat, lng]) => `${lat},${lng}`).join(";");
+  const settings = { ...(currentGame.settings || {}), boundary: encoded };
+  const { error } = await sb.from("games").update({ settings }).eq("id", currentGame.id);
+  if (!error) currentGame.settings = settings;
+}
 
 // Zoom-aware clustering: questions whose pins would overlap AT THIS zoom merge
 // into one pill ("1,2") that lists each member in its popup; zooming in grows
